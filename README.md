@@ -31,7 +31,7 @@ The webhook intercepts pod creation and:
 ## Prerequisites
 
 - Kubernetes 1.32+ with DRA enabled
-- GPU and NIC DRA drivers installed (e.g., `gpu.nvidia.com`, `dranet`)
+- GPU and NIC DRA drivers installed (e.g., `gpu.nvidia.com`, `dranet` v1.1.0 tested)
 - `cert-manager` or manually generated TLS certificates
 
 ## Quick Start
