@@ -1,0 +1,74 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dra-gpu-nic-webhook
+  namespace: dra-webhook-system
+  labels:
+    app: dra-gpu-nic-webhook
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: dra-gpu-nic-webhook
+  template:
+    metadata:
+      labels:
+        app: dra-gpu-nic-webhook
+    spec:
+      serviceAccountName: dra-gpu-nic-webhook
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            app: dra-gpu-nic-webhook
+      containers:
+      - name: webhook
+        image: quay.io/rh-ee-thibrahi/dra-net-webhook:webhook
+        imagePullPolicy: Always
+        args:
+        - --port=8443
+        - --cert-dir=/certs
+        - --config-namespace=dra-webhook-system
+        - --config-name=dra-gpu-nic-webhook-config
+        ports:
+        - containerPort: 8443
+          name: https
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8443
+            scheme: HTTPS
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8443
+            scheme: HTTPS
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        volumeMounts:
+        - name: tls-certs
+          mountPath: /certs
+          readOnly: true
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          capabilities:
+            drop:
+            - ALL
+      volumes:
+      - name: tls-certs
+        secret:
+          secretName: dra-gpu-nic-webhook-tls

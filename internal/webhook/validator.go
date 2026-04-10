@@ -1,0 +1,31 @@
+package webhook
+
+import "fmt"
+
+// ValidateRequest checks whether the requested GPU-NIC pair count is valid
+// given the NUMA and node constraints from the config.
+func ValidateRequest(count int, allowCrossNUMA bool, cfg Config) error {
+	if count <= 0 {
+		return fmt.Errorf("gpu-nic-pair count must be at least 1, got %d", count)
+	}
+
+	if count > cfg.MaxPairsPerNode {
+		return fmt.Errorf("gpu-nic-pair count %d exceeds maximum per node (%d)", count, cfg.MaxPairsPerNode)
+	}
+
+	// Requesting all pairs on a node implicitly requires cross-NUMA;
+	// allow it automatically instead of forcing the user to annotate.
+	if count == cfg.MaxPairsPerNode {
+		return nil
+	}
+
+	if count > cfg.MaxPairsPerNUMA && !allowCrossNUMA {
+		return fmt.Errorf(
+			"gpu-nic-pair count %d exceeds single NUMA zone capacity (%d); "+
+				"set annotation %s=true to allow cross-NUMA allocation",
+			count, cfg.MaxPairsPerNUMA, AnnotationAllowCrossNUMA,
+		)
+	}
+
+	return nil
+}

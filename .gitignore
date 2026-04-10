@@ -1,0 +1,19 @@
+# Build output
+bin/
+
+# Generated TLS certificates
+certs/
+
+# Claude Code local settings
+.claude/
+
+# Go
+*.exe
+*.test
+*.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

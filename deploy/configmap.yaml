@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dra-gpu-nic-webhook-config
+  namespace: dra-webhook-system
+data:
+  config.yaml: |
+    maxPairsPerNUMA: 4
+    maxPairsPerNode: 8
+    gpuDeviceClassName: gpu.nvidia.com
+    nicDeviceClassName: dranet
+    nicConfig:
+      mtu: 9000
+      rdmaRequired: true
+      interfacePrefix: "net"
+      startingTableId: 100
+    # Experimental: pre-flight check reads ResourceSlices to verify
+    # device availability before admitting pods. Adds admission latency
+    # but gives immediate denial with descriptive error instead of
+    # leaving pods stuck in Pending.
+    preflightCheck: false
+  reconciler.yaml: |
+    # How often to check for orphaned resources
+    interval: "5m"
+    # Auto-delete orphaned resources after grace period
+    autoReap: false
+    # How long an orphan must be detected before auto-reaping
+    gracePeriod: "10m"
+    # How long to keep reaped records in state before pruning
+    pruneAfter: "168h"
+    # Path for persistent state file (must be on a PV)
+    statePath: "/data/reconciler-state.json"

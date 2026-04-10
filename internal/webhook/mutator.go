@@ -1,0 +1,288 @@
+package webhook
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strconv"
+
+	corev1 "k8s.io/api/core/v1"
+	resourcev1 "k8s.io/api/resource/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/klog/v2"
+
+	resourceclient "k8s.io/client-go/kubernetes/typed/resource/v1"
+)
+
+// Mutator handles pod mutation for GPU-NIC pair requests.
+type Mutator struct {
+	KubeClient     kubernetes.Interface
+	ResourceClient resourceclient.ResourceV1Interface
+	Config         Config
+}
+
+// jsonPatchOp represents a single JSON Patch operation.
+type jsonPatchOp struct {
+	Op    string      `json:"op"`
+	Path  string      `json:"path"`
+	Value interface{} `json:"value,omitempty"`
+}
+
+// Mutate processes a pod and returns a JSON patch if mutation is needed.
+// Returns nil patch if no mutation is required, or an error string for denial.
+func (m *Mutator) Mutate(ctx context.Context, pod *corev1.Pod, namespace string) ([]byte, error) {
+	// Skip already-mutated pods
+	if pod.Annotations != nil && pod.Annotations[AnnotationMutated] == "true" {
+		return nil, nil
+	}
+
+	// Find the gpu-nic-pair resource request across all containers
+	count, containerIndices, err := extractGPUNICPairCount(pod)
+	if err != nil {
+		return nil, err
+	}
+	if count == 0 {
+		return nil, nil
+	}
+
+	// Check cross-NUMA annotation
+	allowCrossNUMA := false
+	if pod.Annotations != nil && pod.Annotations[AnnotationAllowCrossNUMA] == "true" {
+		allowCrossNUMA = true
+	}
+
+	// Validate
+	if err := ValidateRequest(count, allowCrossNUMA, m.Config); err != nil {
+		return nil, err
+	}
+
+	// Pre-flight availability check (experimental, opt-in via config)
+	if m.Config.PreflightCheck {
+		checker := &PreflightChecker{ResourceClient: m.ResourceClient}
+		// Determine NUMA constraint early for the preflight check
+		preflightNUMA := !allowCrossNUMA && count < m.Config.MaxPairsPerNode
+		if err := checker.CheckAvailability(ctx, count, preflightNUMA, m.Config); err != nil {
+			return nil, err
+		}
+	}
+
+	// Determine NUMA constraint mode:
+	// - Full node (count == max): always cross-NUMA (no point constraining)
+	// - Explicit allow-cross-numa annotation: respect it for any count
+	// - Otherwise: enforce NUMA locality
+	numaConstrained := !allowCrossNUMA && count < m.Config.MaxPairsPerNode
+
+	// Build the claim template spec
+	claimSpec, err := BuildClaimTemplateSpec(count, numaConstrained, m.Config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build claim template: %w", err)
+	}
+
+	// Ensure the ResourceClaimTemplate exists
+	templateName := TemplateName(count, numaConstrained, m.Config)
+	if err := m.ensureClaimTemplate(ctx, namespace, templateName, claimSpec); err != nil {
+		return nil, fmt.Errorf("failed to ensure claim template: %w", err)
+	}
+
+	// Build JSON patch
+	patch, err := buildPatch(pod, count, templateName, containerIndices)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build patch: %w", err)
+	}
+
+	klog.InfoS("Mutating pod", "namespace", namespace, "pod", podName(pod),
+		"gpu-nic-pairs", count, "numaConstrained", numaConstrained, "template", templateName)
+
+	return patch, nil
+}
+
+// extractGPUNICPairCount finds the gpu-nic-pair resource request in the pod's containers.
+// Returns the total count and the indices of containers that had the request.
+func extractGPUNICPairCount(pod *corev1.Pod) (int, []int, error) {
+	totalCount := 0
+	var containerIndices []int
+
+	for i, c := range pod.Spec.Containers {
+		if c.Resources.Requests != nil {
+			if q, ok := c.Resources.Requests[corev1.ResourceName(ResourceGPUNICPair)]; ok {
+				val, ok := q.AsInt64()
+				if !ok {
+					return 0, nil, fmt.Errorf("container %q: %s must be an integer, got %s",
+						c.Name, ResourceGPUNICPair, q.String())
+				}
+				totalCount += int(val)
+				containerIndices = append(containerIndices, i)
+			}
+		}
+		if c.Resources.Limits != nil {
+			if q, ok := c.Resources.Limits[corev1.ResourceName(ResourceGPUNICPair)]; ok {
+				// If only limits is set (no requests), use limits value
+				if c.Resources.Requests == nil || c.Resources.Requests[corev1.ResourceName(ResourceGPUNICPair)] == (c.Resources.Limits[corev1.ResourceName(ResourceGPUNICPair)]) {
+					continue // already counted from requests
+				}
+				val, ok := q.AsInt64()
+				if !ok {
+					return 0, nil, fmt.Errorf("container %q: %s limit must be an integer, got %s",
+						c.Name, ResourceGPUNICPair, q.String())
+				}
+				_ = val // limits match requests for extended resources
+			}
+		}
+	}
+
+	return totalCount, containerIndices, nil
+}
+
+// ensureClaimTemplate creates a ResourceClaimTemplate if it doesn't exist.
+func (m *Mutator) ensureClaimTemplate(ctx context.Context, namespace, name string, spec resourcev1.ResourceClaimSpec) error {
+	template := &resourcev1.ResourceClaimTemplate{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by": "dra-gpu-nic-webhook",
+			},
+		},
+		Spec: resourcev1.ResourceClaimTemplateSpec{
+			Spec: spec,
+		},
+	}
+
+	_, err := m.ResourceClient.ResourceClaimTemplates(namespace).Create(ctx, template, metav1.CreateOptions{})
+	if err != nil {
+		if errors.IsAlreadyExists(err) {
+			klog.V(2).InfoS("ResourceClaimTemplate already exists", "namespace", namespace, "name", name)
+			return nil
+		}
+		return err
+	}
+
+	klog.InfoS("Created ResourceClaimTemplate", "namespace", namespace, "name", name)
+	return nil
+}
+
+// buildPatch creates the JSON patch to mutate the pod.
+func buildPatch(pod *corev1.Pod, count int, templateName string, containerIndices []int) ([]byte, error) {
+	var patches []jsonPatchOp
+
+	// 1. Remove dra.llm-d.io/gpu-nic-pair from resources.requests and limits for each container
+	for _, idx := range containerIndices {
+		patches = append(patches, jsonPatchOp{
+			Op:   "remove",
+			Path: fmt.Sprintf("/spec/containers/%d/resources/requests/%s", idx, escapeJSONPointer(ResourceGPUNICPair)),
+		})
+		// Also remove from limits if present
+		c := pod.Spec.Containers[idx]
+		if c.Resources.Limits != nil {
+			if _, ok := c.Resources.Limits[corev1.ResourceName(ResourceGPUNICPair)]; ok {
+				patches = append(patches, jsonPatchOp{
+					Op:   "remove",
+					Path: fmt.Sprintf("/spec/containers/%d/resources/limits/%s", idx, escapeJSONPointer(ResourceGPUNICPair)),
+				})
+			}
+		}
+	}
+
+	// 2. Add spec.resourceClaims entry
+	podResourceClaim := corev1.PodResourceClaim{
+		Name:                      ResourceClaimName,
+		ResourceClaimTemplateName: strPtr(templateName),
+	}
+
+	if pod.Spec.ResourceClaims == nil {
+		patches = append(patches, jsonPatchOp{
+			Op:    "add",
+			Path:  "/spec/resourceClaims",
+			Value: []corev1.PodResourceClaim{podResourceClaim},
+		})
+	} else {
+		patches = append(patches, jsonPatchOp{
+			Op:    "add",
+			Path:  "/spec/resourceClaims/-",
+			Value: podResourceClaim,
+		})
+	}
+
+	// 3. Add resources.claims to each container that had the request
+	for _, idx := range containerIndices {
+		claims := make([]corev1.ResourceClaim, 0, count*2)
+		for i := 0; i < count; i++ {
+			claims = append(claims,
+				corev1.ResourceClaim{Name: ResourceClaimName, Request: fmt.Sprintf("gpu-%d", i)},
+				corev1.ResourceClaim{Name: ResourceClaimName, Request: fmt.Sprintf("nic-%d", i)},
+			)
+		}
+
+		c := pod.Spec.Containers[idx]
+		if c.Resources.Claims == nil {
+			patches = append(patches, jsonPatchOp{
+				Op:    "add",
+				Path:  fmt.Sprintf("/spec/containers/%d/resources/claims", idx),
+				Value: claims,
+			})
+		} else {
+			for _, claim := range claims {
+				patches = append(patches, jsonPatchOp{
+					Op:    "add",
+					Path:  fmt.Sprintf("/spec/containers/%d/resources/claims/-", idx),
+					Value: claim,
+				})
+			}
+		}
+	}
+
+	// 4. Add mutated annotation
+	if pod.Annotations == nil {
+		patches = append(patches, jsonPatchOp{
+			Op:    "add",
+			Path:  "/metadata/annotations",
+			Value: map[string]string{AnnotationMutated: "true"},
+		})
+	} else {
+		patches = append(patches, jsonPatchOp{
+			Op:    "add",
+			Path:  "/metadata/annotations/" + escapeJSONPointer(AnnotationMutated),
+			Value: "true",
+		})
+	}
+
+	return json.Marshal(patches)
+}
+
+// escapeJSONPointer escapes a string for use in a JSON Pointer (RFC 6901).
+// '~' becomes '~0', '/' becomes '~1'.
+func escapeJSONPointer(s string) string {
+	result := ""
+	for _, c := range s {
+		switch c {
+		case '~':
+			result += "~0"
+		case '/':
+			result += "~1"
+		default:
+			result += string(c)
+		}
+	}
+	return result
+}
+
+func strPtr(s string) *string {
+	return &s
+}
+
+func podName(pod *corev1.Pod) string {
+	if pod.Name != "" {
+		return pod.Name
+	}
+	if pod.GenerateName != "" {
+		return pod.GenerateName + "<generated>"
+	}
+	return "<unknown>"
+}
+
+// intToStr converts int to string (used in JSON patch paths).
+func intToStr(i int) string {
+	return strconv.Itoa(i)
+}

@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dra-gpu-nic-reconciler
+  namespace: dra-webhook-system
+  labels:
+    app: dra-gpu-nic-reconciler
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: dra-gpu-nic-reconciler
+  template:
+    metadata:
+      labels:
+        app: dra-gpu-nic-reconciler
+    spec:
+      serviceAccountName: dra-gpu-nic-webhook
+      containers:
+      - name: reconciler
+        image: quay.io/rh-ee-thibrahi/dra-net-webhook:reconciler
+        imagePullPolicy: Always
+        args:
+        - --config-namespace=dra-webhook-system
+        - --config-name=dra-gpu-nic-webhook-config
+        - --health-port=8080
+        ports:
+        - containerPort: 8080
+          name: health
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        volumeMounts:
+        - name: state
+          mountPath: /data
+        resources:
+          requests:
+            cpu: 25m
+            memory: 64Mi
+          limits:
+            cpu: 100m
+            memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          capabilities:
+            drop:
+            - ALL
+      volumes:
+      - name: state
+        persistentVolumeClaim:
+          claimName: dra-reconciler-state
