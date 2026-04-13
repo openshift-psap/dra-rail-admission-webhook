@@ -30,7 +30,7 @@ The webhook intercepts pod creation and:
 
 ## Prerequisites
 
-- Kubernetes 1.32+ with DRA enabled
+- Kubernetes 1.34.2+ with DRA enabled
 - GPU and NIC DRA drivers installed (e.g., `gpu.nvidia.com`, `dranet` v1.1.0 tested)
 - `cert-manager` or manually generated TLS certificates
 
@@ -95,4 +95,4 @@ This project was written with [Claude Opus 4.6](https://www.anthropic.com/claude
 
 ## License
 
-TBD
+Apache-2.0. See [LICENSE](LICENSE) for details.
