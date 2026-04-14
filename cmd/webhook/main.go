@@ -65,16 +65,27 @@ func main() {
 		"nicMTU", cfg.NICConfig.MTU,
 	)
 
+	// Create cluster-level allocator
+	allocator := webhook.NewAllocator(kubeClient.ResourceV1(), kubeClient, cfg)
+
 	// Create mutator
 	mutator := &webhook.Mutator{
 		KubeClient:     kubeClient,
 		ResourceClient: kubeClient.ResourceV1(),
 		Config:         cfg,
+		Allocator:      allocator,
 	}
+
+	// Create priority queue for rail-aware mutation ordering.
+	// The 3s debounce collects pod creations from deployment rollouts
+	// so that larger requests (more GPU-NIC pairs) get first pick of
+	// rails and anti-affinity is correctly evaluated across the batch.
+	queue := webhook.NewMutationQueue(mutator, 3*time.Second)
 
 	// Create handler
 	handler := &webhook.Handler{
 		Mutator: mutator,
+		Queue:   queue,
 	}
 
 	// Set up HTTP server

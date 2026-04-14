@@ -104,3 +104,32 @@ func TestValidateRequest(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateRequest_RailsCount(t *testing.T) {
+	cfg := Config{
+		MaxPairsPerNUMA: 4,
+		MaxPairsPerNode: 8,
+		NICConfig: NICConfig{
+			Rails: []RailConfig{
+				{Subnet: "10.0.0.0/16", Gateway: "10.0.0.1", IPv4Prefix: "10.0."},
+				{Subnet: "10.1.0.0/16", Gateway: "10.1.0.1", IPv4Prefix: "10.1."},
+				{Subnet: "10.2.0.0/16", Gateway: "10.2.0.1", IPv4Prefix: "10.2."},
+				{Subnet: "10.3.0.0/16", Gateway: "10.3.0.1", IPv4Prefix: "10.3."},
+			},
+		},
+	}
+
+	// 4 pairs with 4 rails: OK
+	if err := ValidateRequest(4, true, cfg); err != nil {
+		t.Errorf("4 pairs with 4 rails should be valid: %v", err)
+	}
+
+	// 5 pairs with 4 rails: exceeds rails
+	err := ValidateRequest(5, true, cfg)
+	if err == nil {
+		t.Fatal("5 pairs with 4 rails should fail")
+	}
+	if !strings.Contains(err.Error(), "configured rails") {
+		t.Errorf("error %q should mention configured rails", err.Error())
+	}
+}

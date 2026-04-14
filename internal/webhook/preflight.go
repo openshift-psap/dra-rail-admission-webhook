@@ -227,6 +227,178 @@ func getPCIeRoot(device resourcev1.Device) string {
 	return *attr.StringValue
 }
 
+// SelectAvailableRails reads ResourceSlices to determine which configured rails
+// have free NICs and returns rail indices that can satisfy the request. This
+// prevents the webhook from always pinning to rails 0..N-1, which would strand
+// NICs on other subnets.
+//
+// On any error, it falls back to sequential indices 0..count-1 so that the
+// scheduler can still attempt allocation.
+// SelectAvailableRails reads ResourceSlices to find rails with free NICs,
+// excluding any rails in claimedRails (already assigned to other pods in
+// the same namespace). Falls back to sequential indices on error.
+func (p *PreflightChecker) SelectAvailableRails(ctx context.Context, count int, numaConstrained bool, cfg Config, claimedRails map[int]bool) []int {
+	if len(cfg.NICConfig.Rails) == 0 {
+		return sequentialRails(count)
+	}
+
+	railIndices, err := p.findAvailableRails(ctx, count, numaConstrained, cfg, claimedRails)
+	if err != nil {
+		klog.ErrorS(err, "Rail selection failed, falling back to sequential assignment")
+		return sequentialRails(count)
+	}
+
+	klog.V(2).InfoS("Selected available rails", "railIndices", railIndices)
+	return railIndices
+}
+
+// findAvailableRails checks ResourceSlices for NICs with ipv4 attributes
+// (indicating they're unallocated) and maps them to configured rails.
+func (p *PreflightChecker) findAvailableRails(ctx context.Context, count int, numaConstrained bool, cfg Config, claimedRails map[int]bool) ([]int, error) {
+	slices, err := p.ResourceClient.ResourceSlices().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list resource slices: %w", err)
+	}
+
+	// Build prefix → rail index map from config
+	prefixToRail := make(map[string]int, len(cfg.NICConfig.Rails))
+	for i, rail := range cfg.NICConfig.Rails {
+		prefixToRail[rail.IPv4Prefix] = i
+	}
+
+	// Collect available rails per node per NUMA zone
+	type nodeRails struct {
+		perNUMA map[int][]int // numaZone → list of available rail indices
+		all     []int         // all available rail indices (for cross-NUMA)
+	}
+	nodes := make(map[string]*nodeRails)
+
+	for _, slice := range slices.Items {
+		if slice.Spec.Driver != "dra.net" {
+			continue
+		}
+		nodeName := ""
+		if slice.Spec.NodeName != nil {
+			nodeName = *slice.Spec.NodeName
+		}
+		if nodeName == "" {
+			continue
+		}
+
+		for _, device := range slice.Spec.Devices {
+			// Must have ipv4 (absent = allocated) and rdma if required
+			ipv4 := getIPv4(device)
+			if ipv4 == "" {
+				continue
+			}
+			if cfg.NICConfig.RDMARequired {
+				rdmaAttr, ok := device.Attributes[resourcev1.QualifiedName("dra.net/rdma")]
+				if !ok || rdmaAttr.BoolValue == nil || !*rdmaAttr.BoolValue {
+					continue
+				}
+			}
+
+			// Match ipv4 to a configured rail
+			railIdx := -1
+			for prefix, idx := range prefixToRail {
+				if strings.HasPrefix(ipv4, prefix) {
+					railIdx = idx
+					break
+				}
+			}
+			if railIdx < 0 {
+				continue // NIC on a subnet not in our rail config
+			}
+
+			numa := getNUMAZone(device)
+
+			if nodes[nodeName] == nil {
+				nodes[nodeName] = &nodeRails{perNUMA: make(map[int][]int)}
+			}
+			nodes[nodeName].perNUMA[numa] = append(nodes[nodeName].perNUMA[numa], railIdx)
+			nodes[nodeName].all = append(nodes[nodeName].all, railIdx)
+		}
+	}
+
+	// First pass: try to find rails that are NOT already claimed by existing
+	// templates. This prevents concurrent pods from colliding on the same rail.
+	for nodeName, nr := range nodes {
+		if numaConstrained {
+			for numaID, rails := range nr.perNUMA {
+				unclaimed := filterRails(rails, claimedRails)
+				if len(unclaimed) >= count {
+					klog.V(3).InfoS("Found unclaimed available rails",
+						"node", nodeName, "numaZone", numaID,
+						"available", len(unclaimed), "selected", unclaimed[:count])
+					return unclaimed[:count], nil
+				}
+			}
+		} else {
+			unclaimed := filterRails(nr.all, claimedRails)
+			if len(unclaimed) >= count {
+				klog.V(3).InfoS("Found unclaimed available rails (cross-NUMA)",
+					"node", nodeName,
+					"available", len(unclaimed), "selected", unclaimed[:count])
+				return unclaimed[:count], nil
+			}
+		}
+	}
+
+	// Fallback: ignore claimed rails. This handles multi-node scenarios
+	// where a rail is "claimed" on one node but free on another.
+	for nodeName, nr := range nodes {
+		if numaConstrained {
+			for numaID, rails := range nr.perNUMA {
+				if len(rails) >= count {
+					klog.V(3).InfoS("Falling back to claimed rails",
+						"node", nodeName, "numaZone", numaID,
+						"available", len(rails), "selected", rails[:count])
+					return rails[:count], nil
+				}
+			}
+		} else {
+			if len(nr.all) >= count {
+				klog.V(3).InfoS("Falling back to claimed rails (cross-NUMA)",
+					"node", nodeName,
+					"available", len(nr.all), "selected", nr.all[:count])
+				return nr.all[:count], nil
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("no node has %d available rails", count)
+}
+
+// getIPv4 extracts the IPv4 address string from a device's attributes.
+// Returns "" if not present (device is allocated).
+func getIPv4(device resourcev1.Device) string {
+	attr, ok := device.Attributes[resourcev1.QualifiedName("dra.net/ipv4")]
+	if !ok || attr.StringValue == nil {
+		return ""
+	}
+	return *attr.StringValue
+}
+
+// sequentialRails returns [0, 1, ..., count-1].
+func sequentialRails(count int) []int {
+	rails := make([]int, count)
+	for i := range rails {
+		rails[i] = i
+	}
+	return rails
+}
+
+// filterRails returns elements of rails that are not in the exclude set.
+func filterRails(rails []int, exclude map[int]bool) []int {
+	var result []int
+	for _, r := range rails {
+		if !exclude[r] {
+			result = append(result, r)
+		}
+	}
+	return result
+}
+
 func formatNUMAAvailability(pairsPerNUMA map[int]int) string {
 	if len(pairsPerNUMA) == 0 {
 		return "no NUMA zones"

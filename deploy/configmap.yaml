@@ -14,6 +14,31 @@ data:
       rdmaRequired: true
       interfacePrefix: "net"
       startingTableId: 100
+      rails:
+        - subnet: "10.0.0.0/16"
+          gateway: "10.0.0.1"
+          ipv4Prefix: "10.0."
+        - subnet: "10.1.0.0/16"
+          gateway: "10.1.0.1"
+          ipv4Prefix: "10.1."
+        - subnet: "10.2.0.0/16"
+          gateway: "10.2.0.1"
+          ipv4Prefix: "10.2."
+        - subnet: "10.3.0.0/16"
+          gateway: "10.3.0.1"
+          ipv4Prefix: "10.3."
+        - subnet: "10.4.0.0/16"
+          gateway: "10.4.0.1"
+          ipv4Prefix: "10.4."
+        - subnet: "10.5.0.0/16"
+          gateway: "10.5.0.1"
+          ipv4Prefix: "10.5."
+        - subnet: "10.6.0.0/16"
+          gateway: "10.6.0.1"
+          ipv4Prefix: "10.6."
+        - subnet: "10.7.0.0/16"
+          gateway: "10.7.0.1"
+          ipv4Prefix: "10.7."
     # Experimental: pre-flight check reads ResourceSlices to verify
     # device availability before admitting pods. Adds admission latency
     # but gives immediate denial with descriptive error instead of

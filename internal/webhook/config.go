@@ -14,6 +14,15 @@ type Route struct {
 	Destination string `yaml:"destination" json:"destination"`
 	Gateway     string `yaml:"gateway,omitempty" json:"gateway,omitempty"`
 	Table       int    `yaml:"table,omitempty" json:"table,omitempty"`
+	Scope       int    `yaml:"scope,omitempty" json:"scope,omitempty"`
+}
+
+// RailConfig defines the network topology for a single rail.
+// Each rail maps to a specific subnet and gateway.
+type RailConfig struct {
+	Subnet     string `yaml:"subnet" json:"subnet"`         // e.g., "10.0.0.0/16"
+	Gateway    string `yaml:"gateway" json:"gateway"`        // e.g., "10.0.0.1"
+	IPv4Prefix string `yaml:"ipv4Prefix" json:"ipv4Prefix"` // e.g., "10.0." for CEL selector
 }
 
 // Rule represents a source-based routing rule.
@@ -25,12 +34,13 @@ type Rule struct {
 
 // NICConfig holds network interface configuration.
 type NICConfig struct {
-	MTU             int     `yaml:"mtu"`
-	RDMARequired    bool    `yaml:"rdmaRequired"`
-	InterfacePrefix string  `yaml:"interfacePrefix"`
-	Routes          []Route `yaml:"routes,omitempty"`
-	SourceSubnet    string  `yaml:"sourceSubnet,omitempty"`
-	StartingTableID int     `yaml:"startingTableId,omitempty"`
+	MTU             int          `yaml:"mtu"`
+	RDMARequired    bool         `yaml:"rdmaRequired"`
+	InterfacePrefix string       `yaml:"interfacePrefix"`
+	Routes          []Route      `yaml:"routes,omitempty"`
+	SourceSubnet    string       `yaml:"sourceSubnet,omitempty"`
+	StartingTableID int          `yaml:"startingTableId,omitempty"`
+	Rails           []RailConfig `yaml:"rails,omitempty"`
 }
 
 // Config holds the webhook configuration loaded from a ConfigMap.

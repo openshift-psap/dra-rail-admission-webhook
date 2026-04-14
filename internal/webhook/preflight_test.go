@@ -270,50 +270,45 @@ func TestIsNICAvailable_NoRDMARequired(t *testing.T) {
 	}
 }
 
-func TestMutate_WithPreflightEnabled(t *testing.T) {
-	cfg := testConfig()
-	cfg.PreflightCheck = true
+func TestMutate_WithAvailableSlots(t *testing.T) {
+	cfg := testConfigWithRails()
 
-	// Create slices with 4 available on NUMA 0, 4 on NUMA 1
-	slices := makeNodeSlices("worker-1", 4, 0, 4, 0)
-	client := fake.NewSimpleClientset(slices[0], slices[1])
-
-	m := &Mutator{
-		KubeClient:     client,
-		ResourceClient: client.ResourceV1(),
-		Config:         cfg,
-	}
+	// Use allocator-aware mutator with available NICs
+	m := newTestMutatorWithAllocator(cfg)
 
 	pod := podWithGPUNICPairs(2)
 	patch, err := m.Mutate(context.Background(), pod, "default")
 	if err != nil {
-		t.Fatalf("unexpected error with preflight enabled: %v", err)
+		t.Fatalf("unexpected error with available slots: %v", err)
 	}
 	if patch == nil {
 		t.Fatal("expected non-nil patch")
 	}
 }
 
-func TestMutate_PreflightDenies(t *testing.T) {
-	cfg := testConfig()
-	cfg.PreflightCheck = true
+func TestMutate_DeniesWhenNoSlots(t *testing.T) {
+	cfg := testConfigWithRails()
 
-	// All NICs allocated
-	slices := makeNodeSlices("worker-1", 0, 4, 0, 4)
-	client := fake.NewSimpleClientset(slices[0], slices[1])
+	// Node exists but no ResourceSlices (no NICs available)
+	node := fakeNode("worker-1", map[string]string{
+		"kubernetes.io/hostname": "worker-1",
+	})
+	client := fake.NewSimpleClientset(node)
+	allocator := NewAllocator(client.ResourceV1(), client, cfg)
 
 	m := &Mutator{
 		KubeClient:     client,
 		ResourceClient: client.ResourceV1(),
 		Config:         cfg,
+		Allocator:      allocator,
 	}
 
 	pod := podWithGPUNICPairs(1)
 	_, err := m.Mutate(context.Background(), pod, "default")
 	if err == nil {
-		t.Fatal("expected preflight denial when all devices allocated")
+		t.Fatal("expected denial when all devices allocated")
 	}
-	if !strings.Contains(err.Error(), "preflight") {
-		t.Errorf("error should be from preflight: %v", err)
+	if !strings.Contains(err.Error(), "allocation failed") {
+		t.Errorf("error should be from allocation: %v", err)
 	}
 }

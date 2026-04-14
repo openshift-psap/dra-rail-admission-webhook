@@ -21,6 +21,7 @@ type Mutator struct {
 	KubeClient     kubernetes.Interface
 	ResourceClient resourceclient.ResourceV1Interface
 	Config         Config
+	Allocator      *Allocator // cluster-level GPU-NIC pair allocator
 }
 
 // jsonPatchOp represents a single JSON Patch operation.
@@ -58,42 +59,51 @@ func (m *Mutator) Mutate(ctx context.Context, pod *corev1.Pod, namespace string)
 		return nil, err
 	}
 
-	// Pre-flight availability check (experimental, opt-in via config)
-	if m.Config.PreflightCheck {
-		checker := &PreflightChecker{ResourceClient: m.ResourceClient}
-		// Determine NUMA constraint early for the preflight check
-		preflightNUMA := !allowCrossNUMA && count < m.Config.MaxPairsPerNode
-		if err := checker.CheckAvailability(ctx, count, preflightNUMA, m.Config); err != nil {
-			return nil, err
-		}
-	}
-
 	// Determine NUMA constraint mode:
 	// - Full node (count == max): always cross-NUMA (no point constraining)
 	// - Explicit allow-cross-numa annotation: respect it for any count
 	// - Otherwise: enforce NUMA locality
 	numaConstrained := !allowCrossNUMA && count < m.Config.MaxPairsPerNode
 
-	// Build the claim template spec
-	claimSpec, err := BuildClaimTemplateSpec(count, numaConstrained, m.Config)
+	// Use the cluster-level allocator to pick a node and rails,
+	// respecting pod affinity/anti-affinity constraints.
+	if m.Allocator == nil {
+		return nil, fmt.Errorf("allocator not configured")
+	}
+
+	result, err := m.Allocator.Allocate(ctx, pod, namespace, count, numaConstrained)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build claim template: %w", err)
+		return nil, fmt.Errorf("allocation failed: %w", err)
 	}
 
-	// Ensure the ResourceClaimTemplate exists
-	templateName := TemplateName(count, numaConstrained, m.Config)
-	if err := m.ensureClaimTemplate(ctx, namespace, templateName, claimSpec); err != nil {
-		return nil, fmt.Errorf("failed to ensure claim template: %w", err)
+	// Create one ResourceClaimTemplate per GPU-NIC pair
+	templateNames := make([]string, count)
+	for i := 0; i < count; i++ {
+		railIdx := result.RailIndices[i]
+
+		spec, err := BuildSinglePairClaimSpec(i, railIdx, m.Config)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build claim spec for pair %d: %w", i, err)
+		}
+
+		name := SinglePairTemplateName(i, railIdx, m.Config)
+		if err := m.ensureClaimTemplate(ctx, namespace, name, spec); err != nil {
+			return nil, fmt.Errorf("failed to ensure claim template for pair %d: %w", i, err)
+		}
+
+		templateNames[i] = name
 	}
 
-	// Build JSON patch
-	patch, err := buildPatch(pod, count, templateName, containerIndices)
+	// Build JSON patch: N separate ResourceClaims + node affinity
+	patch, err := buildSeparateClaimsPatch(pod, count, templateNames, result.NodeName, containerIndices)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build patch: %w", err)
 	}
 
 	klog.InfoS("Mutating pod", "namespace", namespace, "pod", podName(pod),
-		"gpu-nic-pairs", count, "numaConstrained", numaConstrained, "template", templateName)
+		"gpu-nic-pairs", count, "numaConstrained", numaConstrained,
+		"node", result.NodeName, "rails", result.RailIndices,
+		"templates", templateNames)
 
 	return patch, nil
 }
@@ -163,17 +173,18 @@ func (m *Mutator) ensureClaimTemplate(ctx context.Context, namespace, name strin
 	return nil
 }
 
-// buildPatch creates the JSON patch to mutate the pod.
-func buildPatch(pod *corev1.Pod, count int, templateName string, containerIndices []int) ([]byte, error) {
+// buildSeparateClaimsPatch creates the JSON patch for N separate ResourceClaims
+// (one per GPU-NIC pair) and adds a nodeAffinity to pin the pod to the
+// allocator-selected node.
+func buildSeparateClaimsPatch(pod *corev1.Pod, count int, templateNames []string, nodeName string, containerIndices []int) ([]byte, error) {
 	var patches []jsonPatchOp
 
-	// 1. Remove dra.llm-d.io/gpu-nic-pair from resources.requests and limits for each container
+	// 1. Remove dra.llm-d.io/gpu-nic-pair from resources.requests and limits
 	for _, idx := range containerIndices {
 		patches = append(patches, jsonPatchOp{
 			Op:   "remove",
 			Path: fmt.Sprintf("/spec/containers/%d/resources/requests/%s", idx, escapeJSONPointer(ResourceGPUNICPair)),
 		})
-		// Also remove from limits if present
 		c := pod.Spec.Containers[idx]
 		if c.Resources.Limits != nil {
 			if _, ok := c.Resources.Limits[corev1.ResourceName(ResourceGPUNICPair)]; ok {
@@ -185,33 +196,40 @@ func buildPatch(pod *corev1.Pod, count int, templateName string, containerIndice
 		}
 	}
 
-	// 2. Add spec.resourceClaims entry
-	podResourceClaim := corev1.PodResourceClaim{
-		Name:                      ResourceClaimName,
-		ResourceClaimTemplateName: strPtr(templateName),
+	// 2. Add N separate spec.resourceClaims entries (one per pair)
+	podResourceClaims := make([]corev1.PodResourceClaim, count)
+	for i := 0; i < count; i++ {
+		podResourceClaims[i] = corev1.PodResourceClaim{
+			Name:                      fmt.Sprintf("gpu-nic-pair-%d", i),
+			ResourceClaimTemplateName: strPtr(templateNames[i]),
+		}
 	}
 
 	if pod.Spec.ResourceClaims == nil {
 		patches = append(patches, jsonPatchOp{
 			Op:    "add",
 			Path:  "/spec/resourceClaims",
-			Value: []corev1.PodResourceClaim{podResourceClaim},
+			Value: podResourceClaims,
 		})
 	} else {
-		patches = append(patches, jsonPatchOp{
-			Op:    "add",
-			Path:  "/spec/resourceClaims/-",
-			Value: podResourceClaim,
-		})
+		for _, prc := range podResourceClaims {
+			patches = append(patches, jsonPatchOp{
+				Op:    "add",
+				Path:  "/spec/resourceClaims/-",
+				Value: prc,
+			})
+		}
 	}
 
-	// 3. Add resources.claims to each container that had the request
+	// 3. Add resources.claims to each container — each pair contributes
+	//    a "gpu" and "nic" request from its own claim.
 	for _, idx := range containerIndices {
 		claims := make([]corev1.ResourceClaim, 0, count*2)
 		for i := 0; i < count; i++ {
+			claimName := fmt.Sprintf("gpu-nic-pair-%d", i)
 			claims = append(claims,
-				corev1.ResourceClaim{Name: ResourceClaimName, Request: fmt.Sprintf("gpu-%d", i)},
-				corev1.ResourceClaim{Name: ResourceClaimName, Request: fmt.Sprintf("nic-%d", i)},
+				corev1.ResourceClaim{Name: claimName, Request: "gpu"},
+				corev1.ResourceClaim{Name: claimName, Request: "nic"},
 			)
 		}
 
@@ -233,7 +251,57 @@ func buildPatch(pod *corev1.Pod, count int, templateName string, containerIndice
 		}
 	}
 
-	// 4. Add mutated annotation
+	// 4. Add nodeAffinity to pin pod to the allocator-selected node.
+	//    Merges with existing affinity if present.
+	nodeSelectorTerm := corev1.NodeSelectorTerm{
+		MatchFields: []corev1.NodeSelectorRequirement{{
+			Key:      "metadata.name",
+			Operator: corev1.NodeSelectorOpIn,
+			Values:   []string{nodeName},
+		}},
+	}
+
+	if pod.Spec.Affinity == nil {
+		patches = append(patches, jsonPatchOp{
+			Op:   "add",
+			Path: "/spec/affinity",
+			Value: corev1.Affinity{
+				NodeAffinity: &corev1.NodeAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+						NodeSelectorTerms: []corev1.NodeSelectorTerm{nodeSelectorTerm},
+					},
+				},
+			},
+		})
+	} else if pod.Spec.Affinity.NodeAffinity == nil {
+		patches = append(patches, jsonPatchOp{
+			Op:   "add",
+			Path: "/spec/affinity/nodeAffinity",
+			Value: corev1.NodeAffinity{
+				RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+					NodeSelectorTerms: []corev1.NodeSelectorTerm{nodeSelectorTerm},
+				},
+			},
+		})
+	} else if pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
+		patches = append(patches, jsonPatchOp{
+			Op:   "add",
+			Path: "/spec/affinity/nodeAffinity/requiredDuringSchedulingIgnoredDuringExecution",
+			Value: corev1.NodeSelector{
+				NodeSelectorTerms: []corev1.NodeSelectorTerm{nodeSelectorTerm},
+			},
+		})
+	} else {
+		// Replace existing terms with intersection (the allocator already
+		// verified the selected node satisfies existing constraints)
+		patches = append(patches, jsonPatchOp{
+			Op:    "add",
+			Path:  "/spec/affinity/nodeAffinity/requiredDuringSchedulingIgnoredDuringExecution/nodeSelectorTerms/-",
+			Value: nodeSelectorTerm,
+		})
+	}
+
+	// 5. Add mutated annotation
 	if pod.Annotations == nil {
 		patches = append(patches, jsonPatchOp{
 			Op:    "add",

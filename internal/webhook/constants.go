@@ -1,6 +1,12 @@
 package webhook
 
 const (
+	// defaultRulePriority is the Linux policy routing rule priority used
+	// for source-based rules. 32765 is just below the default "lookup main"
+	// rule (32766), ensuring rail-specific policy tables are consulted for
+	// traffic originating from a rail's subnet.
+	defaultRulePriority = 32765
+
 	// ResourceGPUNICPair is the synthetic resource name users put in
 	// container resources.requests to request GPU+NIC pairs.
 	// Example: resources.requests["dra.llm-d.io/gpu-nic-pair"]: "4"

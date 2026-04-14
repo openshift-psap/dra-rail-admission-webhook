@@ -29,6 +29,7 @@ var (
 // Handler is the HTTP handler for the mutating admission webhook.
 type Handler struct {
 	Mutator *Mutator
+	Queue   *MutationQueue // optional; when set, requests are prioritized
 }
 
 // ServeHTTP handles the admission review request.
@@ -99,8 +100,20 @@ func (h *Handler) handleAdmission(ctx context.Context, req *admissionv1.Admissio
 		return denyResponse(fmt.Sprintf("failed to unmarshal pod: %v", err))
 	}
 
-	// Mutate
-	patch, err := h.Mutator.Mutate(ctx, &pod, req.Namespace)
+	// Mutate — use the priority queue when available (serializes concurrent
+	// requests and processes larger GPU-NIC pair counts first).
+	var patch []byte
+	var err error
+	if h.Queue != nil {
+		count, _, _ := extractGPUNICPairCount(&pod)
+		if count > 0 {
+			patch, err = h.Queue.Enqueue(ctx, &pod, req.Namespace, count)
+		} else {
+			patch, err = h.Mutator.Mutate(ctx, &pod, req.Namespace)
+		}
+	} else {
+		patch, err = h.Mutator.Mutate(ctx, &pod, req.Namespace)
+	}
 	if err != nil {
 		klog.ErrorS(err, "Mutation denied", "namespace", req.Namespace, "pod", podName(&pod))
 		return denyResponse(err.Error())

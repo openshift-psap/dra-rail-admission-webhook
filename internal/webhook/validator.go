@@ -13,6 +13,10 @@ func ValidateRequest(count int, allowCrossNUMA bool, cfg Config) error {
 		return fmt.Errorf("gpu-nic-pair count %d exceeds maximum per node (%d)", count, cfg.MaxPairsPerNode)
 	}
 
+	if len(cfg.NICConfig.Rails) > 0 && count > len(cfg.NICConfig.Rails) {
+		return fmt.Errorf("gpu-nic-pair count %d exceeds number of configured rails (%d)", count, len(cfg.NICConfig.Rails))
+	}
+
 	// Requesting all pairs on a node implicitly requires cross-NUMA;
 	// allow it automatically instead of forcing the user to annotate.
 	if count == cfg.MaxPairsPerNode {
