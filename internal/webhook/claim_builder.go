@@ -310,7 +310,7 @@ func buildDevicePinSelector(sel DeviceSelectorConfig, value string) resourcev1.D
 	return resourcev1.DeviceSelector{
 		CEL: &resourcev1.CELDeviceSelector{
 			Expression: fmt.Sprintf(
-				`device.attributes[%q].%s == %q`,
+				`device.attributes[%q][%q] == %q`,
 				sel.AttributeDomain, sel.AttributeName, value,
 			),
 		},

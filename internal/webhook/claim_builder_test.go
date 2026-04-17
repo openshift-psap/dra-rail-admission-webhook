@@ -384,7 +384,7 @@ func TestBuildExplicitPairClaimSpec_GPUAndNICSelectors(t *testing.T) {
 	if len(gpuReq.Exactly.Selectors) != 1 {
 		t.Fatalf("GPU: expected 1 selector, got %d", len(gpuReq.Exactly.Selectors))
 	}
-	expectedGPUCEL := `device.attributes["resource.kubernetes.io"].pciBusID == "0008:06:00.0"`
+	expectedGPUCEL := `device.attributes["resource.kubernetes.io"]["pciBusID"] == "0008:06:00.0"`
 	if gpuReq.Exactly.Selectors[0].CEL.Expression != expectedGPUCEL {
 		t.Errorf("GPU CEL = %q, want %q", gpuReq.Exactly.Selectors[0].CEL.Expression, expectedGPUCEL)
 	}
@@ -400,7 +400,7 @@ func TestBuildExplicitPairClaimSpec_GPUAndNICSelectors(t *testing.T) {
 	if len(nicReq.Exactly.Selectors) != 2 {
 		t.Fatalf("NIC: expected 2 selectors (pin + rail/RDMA), got %d", len(nicReq.Exactly.Selectors))
 	}
-	expectedNICPin := `device.attributes["dra.net"].rdmaDevice == "mlx5_0"`
+	expectedNICPin := `device.attributes["dra.net"]["rdmaDevice"] == "mlx5_0"`
 	if nicReq.Exactly.Selectors[0].CEL.Expression != expectedNICPin {
 		t.Errorf("NIC pin CEL = %q, want %q", nicReq.Exactly.Selectors[0].CEL.Expression, expectedNICPin)
 	}
@@ -499,7 +499,7 @@ func TestBuildExplicitPairClaimSpec_ThreeDeviceRoles(t *testing.T) {
 	if spec.Devices.Requests[0].Name != "fpga" {
 		t.Errorf("first request = %q, want fpga", spec.Devices.Requests[0].Name)
 	}
-	expectedFPGA := `device.attributes["fpga.vendor.com"].serialNumber == "FPGA-001"`
+	expectedFPGA := `device.attributes["fpga.vendor.com"]["serialNumber"] == "FPGA-001"`
 	if spec.Devices.Requests[0].Exactly.Selectors[0].CEL.Expression != expectedFPGA {
 		t.Errorf("FPGA CEL = %q, want %q", spec.Devices.Requests[0].Exactly.Selectors[0].CEL.Expression, expectedFPGA)
 	}
@@ -591,7 +591,7 @@ func TestBuildExplicitPairClaimSpec_IBMCloudH100_SinglePair(t *testing.T) {
 	if gpu.Exactly.DeviceClassName != "gpu.nvidia.com" {
 		t.Errorf("GPU class = %q, want gpu.nvidia.com", gpu.Exactly.DeviceClassName)
 	}
-	expectedGPU := `device.attributes["resource.kubernetes.io"].pciBusID == "0000:a4:00.0"`
+	expectedGPU := `device.attributes["resource.kubernetes.io"]["pciBusID"] == "0000:a4:00.0"`
 	if gpu.Exactly.Selectors[0].CEL.Expression != expectedGPU {
 		t.Errorf("GPU CEL = %q\nwant    %q", gpu.Exactly.Selectors[0].CEL.Expression, expectedGPU)
 	}
@@ -607,7 +607,7 @@ func TestBuildExplicitPairClaimSpec_IBMCloudH100_SinglePair(t *testing.T) {
 	if nic.Exactly.DeviceClassName != "dranet" {
 		t.Errorf("NIC class = %q, want dranet", nic.Exactly.DeviceClassName)
 	}
-	expectedNICPin := `device.attributes["dra.net"].ifName == "enp163s0"`
+	expectedNICPin := `device.attributes["dra.net"]["ifName"] == "enp163s0"`
 	if nic.Exactly.Selectors[0].CEL.Expression != expectedNICPin {
 		t.Errorf("NIC pin CEL = %q\nwant         %q", nic.Exactly.Selectors[0].CEL.Expression, expectedNICPin)
 	}
@@ -650,14 +650,14 @@ func TestBuildExplicitPairClaimSpec_IBMCloudH100_NUMA1Pair(t *testing.T) {
 	}
 
 	// GPU pinned to 0000:ea:00.0
-	expectedGPU := `device.attributes["resource.kubernetes.io"].pciBusID == "0000:ea:00.0"`
+	expectedGPU := `device.attributes["resource.kubernetes.io"]["pciBusID"] == "0000:ea:00.0"`
 	if spec.Devices.Requests[0].Exactly.Selectors[0].CEL.Expression != expectedGPU {
 		t.Errorf("GPU CEL = %q\nwant    %q",
 			spec.Devices.Requests[0].Exactly.Selectors[0].CEL.Expression, expectedGPU)
 	}
 
 	// NIC pinned to enp233s0
-	expectedNICPin := `device.attributes["dra.net"].ifName == "enp233s0"`
+	expectedNICPin := `device.attributes["dra.net"]["ifName"] == "enp233s0"`
 	if spec.Devices.Requests[1].Exactly.Selectors[0].CEL.Expression != expectedNICPin {
 		t.Errorf("NIC pin CEL = %q\nwant         %q",
 			spec.Devices.Requests[1].Exactly.Selectors[0].CEL.Expression, expectedNICPin)

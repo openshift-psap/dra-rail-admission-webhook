@@ -30,6 +30,7 @@ type DeviceSelectorConfig struct {
 type ExplicitPairMapping struct {
 	Devices map[string]string `yaml:"devices"`
 	Rail    int               `yaml:"rail"`
+	NUMA    int               `yaml:"numa"`
 }
 
 // NodePoolMapping defines the device topology for a group of similar nodes.
@@ -153,6 +154,9 @@ func (c Config) DeviceSelectorKeys() []string {
 
 // ValidatePairingConfig validates the explicit pairing configuration.
 func ValidatePairingConfig(cfg Config) error {
+	if cfg.PairingMode != "" && cfg.PairingMode != PairingModeAuto && cfg.PairingMode != PairingModeExplicit {
+		return fmt.Errorf("unknown pairingMode %q, must be %q or %q", cfg.PairingMode, PairingModeAuto, PairingModeExplicit)
+	}
 	if !cfg.IsExplicitMode() {
 		return nil
 	}
