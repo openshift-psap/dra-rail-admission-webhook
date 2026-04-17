@@ -163,6 +163,8 @@ func Simulate(ctx context.Context, req SimulateRequest) *SimulateResult {
 }
 
 // PrintResult formats the simulation result to the writer.
+//
+//nolint:errcheck // report output to io.Writer; errors not actionable
 func PrintResult(w io.Writer, result *SimulateResult, cfg webhook.Config) {
 	fmt.Fprintln(w, "=== DRA Admission Webhook Dry Run ===")
 	fmt.Fprintln(w)
@@ -280,9 +282,10 @@ func computeStats(state *ClusterState, cfg webhook.Config) ClusterStats {
 	}
 	for _, slice := range state.ResourceSlices {
 		for range slice.Spec.Devices {
-			if slice.Spec.Driver == "dra.net" {
+			switch slice.Spec.Driver {
+			case "dra.net":
 				stats.NICDevices++
-			} else if slice.Spec.Driver == cfg.GPUDeviceClassName {
+			case cfg.GPUDeviceClassName:
 				stats.GPUDevices++
 			}
 		}

@@ -382,7 +382,7 @@ func ExplicitPairTemplateName(nicIndex int, railIndex int, pair ExplicitPairMapp
 	h.Write(data)
 	pairData, _ := json.Marshal(pair.Devices)
 	h.Write(pairData)
-	h.Write([]byte(fmt.Sprintf("explicit:nic:%d:rail:%d", nicIndex, railIndex)))
+	_, _ = fmt.Fprintf(h, "explicit:nic:%d:rail:%d", nicIndex, railIndex)
 	hash := fmt.Sprintf("%x", h.Sum(nil))[:8]
 	return fmt.Sprintf("gpu-nic-pair-%d-rail%d-%s", nicIndex, railIndex, hash)
 }
