@@ -1,0 +1,64 @@
+name: Publish Images
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  WEBHOOK_IMAGE: ghcr.io/${{ github.repository }}/webhook
+  RECONCILER_IMAGE: ghcr.io/${{ github.repository }}/reconciler
+
+jobs:
+  publish:
+    name: Build and Push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v5
+        id: webhook-meta
+        with:
+          images: ${{ env.WEBHOOK_IMAGE }}
+          tags: |
+            type=sha,prefix=
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - uses: docker/metadata-action@v5
+        id: reconciler-meta
+        with:
+          images: ${{ env.RECONCILER_IMAGE }}
+          tags: |
+            type=sha,prefix=
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: webhook
+          push: true
+          tags: ${{ steps.webhook-meta.outputs.tags }}
+          labels: ${{ steps.webhook-meta.outputs.labels }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: reconciler
+          push: true
+          tags: ${{ steps.reconciler-meta.outputs.tags }}
+          labels: ${{ steps.reconciler-meta.outputs.labels }}
