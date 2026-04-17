@@ -399,6 +399,88 @@ func filterRails(rails []int, exclude map[int]bool) []int {
 	return result
 }
 
+// CheckExplicitAvailability verifies that at least one node has enough
+// available mapped device pairs to satisfy the request in explicit mode.
+func (p *PreflightChecker) CheckExplicitAvailability(ctx context.Context, count int, cfg Config) error {
+	if cfg.PairingConfig == nil {
+		return fmt.Errorf("preflight: explicit pairing config not set")
+	}
+
+	slices, err := p.ResourceClient.ResourceSlices().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		klog.ErrorS(err, "Preflight explicit check failed to read cluster state, skipping")
+		return nil
+	}
+
+	// Build per-node per-driver device availability
+	type deviceKey struct {
+		driver string
+		value  string
+	}
+	nodeDevices := make(map[string]map[deviceKey]bool)
+
+	for _, slice := range slices.Items {
+		nodeName := ""
+		if slice.Spec.NodeName != nil {
+			nodeName = *slice.Spec.NodeName
+		}
+		if nodeName == "" {
+			continue
+		}
+
+		if nodeDevices[nodeName] == nil {
+			nodeDevices[nodeName] = make(map[deviceKey]bool)
+		}
+
+		for _, device := range slice.Spec.Devices {
+			for role, sel := range cfg.PairingConfig.DeviceSelectors {
+				if slice.Spec.Driver != sel.DeviceClassName {
+					continue
+				}
+				qualName := resourcev1.QualifiedName(sel.AttributeDomain + "/" + sel.AttributeName)
+				attr, ok := device.Attributes[qualName]
+				if !ok || attr.StringValue == nil {
+					continue
+				}
+				if role == "nic" {
+					if _, hasIF := device.Attributes[resourcev1.QualifiedName("dra.net/ifName")]; !hasIF {
+						continue
+					}
+				}
+				nodeDevices[nodeName][deviceKey{driver: sel.DeviceClassName, value: *attr.StringValue}] = true
+			}
+		}
+	}
+
+	// Check each pool's pairs against node availability
+	for _, pool := range cfg.PairingConfig.NodePools {
+		for nodeName, devices := range nodeDevices {
+			availCount := 0
+			for _, pair := range pool.Pairs {
+				allAvail := true
+				for role, deviceID := range pair.Devices {
+					sel := cfg.PairingConfig.DeviceSelectors[role]
+					if !devices[deviceKey{driver: sel.DeviceClassName, value: deviceID}] {
+						allAvail = false
+						break
+					}
+				}
+				if allAvail {
+					availCount++
+				}
+			}
+			if availCount >= count {
+				klog.V(3).InfoS("Preflight explicit check passed",
+					"node", nodeName, "pool", pool.NodePoolLabel,
+					"available", availCount, "requested", count)
+				return nil
+			}
+		}
+	}
+
+	return fmt.Errorf("preflight: no node has %d available explicit device pairs", count)
+}
+
 func formatNUMAAvailability(pairsPerNUMA map[int]int) string {
 	if len(pairsPerNUMA) == 0 {
 		return "no NUMA zones"

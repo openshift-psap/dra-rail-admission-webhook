@@ -68,39 +68,66 @@ func (m *Mutator) Mutate(ctx context.Context, pod *corev1.Pod, namespace string)
 		return nil, fmt.Errorf("allocator not configured")
 	}
 
-	result, err := m.Allocator.Allocate(ctx, pod, namespace, count, numaConstrained)
-	if err != nil {
-		return nil, fmt.Errorf("allocation failed: %w", err)
-	}
-
-	// Create one ResourceClaimTemplate per GPU-NIC pair
+	var nodeName string
 	templateNames := make([]string, count)
-	for i := 0; i < count; i++ {
-		railIdx := result.RailIndices[i]
 
-		spec, err := BuildSinglePairClaimSpec(i, railIdx, m.Config)
+	if m.Config.IsExplicitMode() {
+		result, err := m.Allocator.AllocateExplicit(ctx, pod, namespace, count, numaConstrained)
 		if err != nil {
-			return nil, fmt.Errorf("failed to build claim spec for pair %d: %w", i, err)
+			return nil, fmt.Errorf("explicit allocation failed: %w", err)
+		}
+		nodeName = result.NodeName
+
+		for i, pair := range result.Pairs {
+			mapping := ExplicitPairMapping{Devices: pair.Devices, Rail: pair.RailIndex}
+			spec, err := BuildExplicitPairClaimSpec(pair.NICIndex, pair.RailIndex, mapping, m.Config)
+			if err != nil {
+				return nil, fmt.Errorf("failed to build explicit claim spec for pair %d: %w", i, err)
+			}
+
+			name := ExplicitPairTemplateName(pair.NICIndex, pair.RailIndex, mapping, m.Config)
+			if err := m.ensureClaimTemplate(ctx, namespace, name, spec); err != nil {
+				return nil, fmt.Errorf("failed to ensure claim template for pair %d: %w", i, err)
+			}
+			templateNames[i] = name
 		}
 
-		name := SinglePairTemplateName(i, railIdx, m.Config)
-		if err := m.ensureClaimTemplate(ctx, namespace, name, spec); err != nil {
-			return nil, fmt.Errorf("failed to ensure claim template for pair %d: %w", i, err)
+		klog.InfoS("Mutating pod (explicit mode)", "namespace", namespace, "pod", podName(pod),
+			"gpu-nic-pairs", count, "numaConstrained", numaConstrained,
+			"node", nodeName, "templates", templateNames)
+	} else {
+		result, err := m.Allocator.Allocate(ctx, pod, namespace, count, numaConstrained)
+		if err != nil {
+			return nil, fmt.Errorf("allocation failed: %w", err)
+		}
+		nodeName = result.NodeName
+
+		for i := 0; i < count; i++ {
+			railIdx := result.RailIndices[i]
+
+			spec, err := BuildSinglePairClaimSpec(i, railIdx, m.Config)
+			if err != nil {
+				return nil, fmt.Errorf("failed to build claim spec for pair %d: %w", i, err)
+			}
+
+			name := SinglePairTemplateName(i, railIdx, m.Config)
+			if err := m.ensureClaimTemplate(ctx, namespace, name, spec); err != nil {
+				return nil, fmt.Errorf("failed to ensure claim template for pair %d: %w", i, err)
+			}
+			templateNames[i] = name
 		}
 
-		templateNames[i] = name
+		klog.InfoS("Mutating pod", "namespace", namespace, "pod", podName(pod),
+			"gpu-nic-pairs", count, "numaConstrained", numaConstrained,
+			"node", nodeName, "rails", result.RailIndices,
+			"templates", templateNames)
 	}
 
 	// Build JSON patch: N separate ResourceClaims + node affinity
-	patch, err := buildSeparateClaimsPatch(pod, count, templateNames, result.NodeName, containerIndices)
+	patch, err := buildSeparateClaimsPatch(pod, count, templateNames, nodeName, containerIndices)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build patch: %w", err)
 	}
-
-	klog.InfoS("Mutating pod", "namespace", namespace, "pod", podName(pod),
-		"gpu-nic-pairs", count, "numaConstrained", numaConstrained,
-		"node", result.NodeName, "rails", result.RailIndices,
-		"templates", templateNames)
 
 	return patch, nil
 }
