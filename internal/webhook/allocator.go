@@ -102,7 +102,7 @@ func (a *Allocator) Allocate(ctx context.Context, pod *corev1.Pod, namespace str
 		}
 		nodeName := parts[0]
 		var railIdx int
-		fmt.Sscanf(parts[1], "%d", &railIdx)
+		_, _ = fmt.Sscanf(parts[1], "%d", &railIdx)
 
 		slots := nodeSlots[nodeName]
 		filtered := make([]NICSlot, 0, len(slots))

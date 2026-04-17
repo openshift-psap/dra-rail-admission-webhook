@@ -299,7 +299,7 @@ func SinglePairTemplateName(nicIndex int, railIndex int, cfg Config) string {
 	h := sha256.New()
 	data, _ := json.Marshal(cfg)
 	h.Write(data)
-	h.Write([]byte(fmt.Sprintf("nic:%d:rail:%d", nicIndex, railIndex)))
+	_, _ = fmt.Fprintf(h, "nic:%d:rail:%d", nicIndex, railIndex)
 	hash := fmt.Sprintf("%x", h.Sum(nil))[:8]
 	return fmt.Sprintf("gpu-nic-pair-%d-rail%d-%s", nicIndex, railIndex, hash)
 }

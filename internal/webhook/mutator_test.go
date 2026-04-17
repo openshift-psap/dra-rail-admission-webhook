@@ -487,7 +487,7 @@ func TestMutate_NodeSelectorRespected(t *testing.T) {
 	}
 
 	var ops []jsonPatchOp
-	json.Unmarshal(patch, &ops)
+	_ = json.Unmarshal(patch, &ops)
 
 	// Verify the affinity pins to node-2 (the one matching nodeSelector)
 	for _, op := range ops {

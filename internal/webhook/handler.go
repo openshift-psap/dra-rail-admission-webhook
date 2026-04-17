@@ -83,7 +83,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(respBytes)
+	_, _ = w.Write(respBytes)
 }
 
 // handleAdmission processes a single admission request and returns a response.

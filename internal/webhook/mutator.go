@@ -49,10 +49,7 @@ func (m *Mutator) Mutate(ctx context.Context, pod *corev1.Pod, namespace string)
 	}
 
 	// Check cross-NUMA annotation
-	allowCrossNUMA := false
-	if pod.Annotations != nil && pod.Annotations[AnnotationAllowCrossNUMA] == "true" {
-		allowCrossNUMA = true
-	}
+	allowCrossNUMA := pod.Annotations != nil && pod.Annotations[AnnotationAllowCrossNUMA] == "true"
 
 	// Validate
 	if err := ValidateRequest(count, allowCrossNUMA, m.Config); err != nil {
