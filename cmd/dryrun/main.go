@@ -66,7 +66,7 @@ func captureCmd(args []string) {
 	fs.StringVar(&output, "output", "cluster-state.json", "Output file path")
 	fs.StringVar(&output, "o", "cluster-state.json", "Output file path (shorthand)")
 	fs.StringVar(&clusterName, "cluster-name", "", "Optional cluster name for the capture")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	if kubeconfig == "" {
 		kubeconfig = os.Getenv("KUBECONFIG")
@@ -100,12 +100,12 @@ func captureCmd(args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Fprintf(os.Stdout, "Captured %d resource slices and %d nodes to %s\n",
+	_, _ = fmt.Fprintf(os.Stdout, "Captured %d resource slices and %d nodes to %s\n",
 		len(state.ResourceSlices), len(state.Nodes), output)
 	if state.ClusterName != "" {
-		fmt.Fprintf(os.Stdout, "Cluster: %s\n", state.ClusterName)
+		_, _ = fmt.Fprintf(os.Stdout, "Cluster: %s\n", state.ClusterName)
 	}
-	fmt.Fprintf(os.Stdout, "Captured at: %s\n", state.CapturedAt.Format("2006-01-02 15:04:05 UTC"))
+	_, _ = fmt.Fprintf(os.Stdout, "Captured at: %s\n", state.CapturedAt.Format("2006-01-02 15:04:05 UTC"))
 }
 
 func simulateCmd(args []string) {
@@ -122,7 +122,7 @@ func simulateCmd(args []string) {
 	fs.IntVar(&count, "count", 1, "Number of GPU-NIC pairs to request")
 	fs.StringVar(&namespace, "namespace", "default", "Namespace for the simulated pod")
 	fs.BoolVar(&crossNUMA, "cross-numa", false, "Allow cross-NUMA allocation")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	if statePath == "" || configPath == "" {
 		fmt.Fprintln(os.Stderr, "Error: --state and --config are required")

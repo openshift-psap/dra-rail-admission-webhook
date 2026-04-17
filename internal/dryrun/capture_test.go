@@ -124,7 +124,7 @@ func TestLoadClusterState_FileNotFound(t *testing.T) {
 func TestLoadClusterState_InvalidJSON(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.json")
-	os.WriteFile(path, []byte("not json"), 0644)
+	_ = os.WriteFile(path, []byte("not json"), 0644)
 
 	_, err := LoadClusterState(path)
 	if err == nil {
