@@ -8,6 +8,7 @@ E2E_KUBECONFIG ?= $(HOME)/.kube/config
 build:
 	go build -o bin/webhook ./cmd/webhook/
 	go build -o bin/reconciler ./cmd/reconciler/
+	go build -o bin/dryrun ./cmd/dryrun/
 
 test:
 	go test ./... -v
@@ -47,5 +48,5 @@ e2e:
 	go test -v -tags e2e -timeout 45m -count 1 ./test/e2e/
 
 clean:
-	rm -f bin/webhook bin/reconciler
+	rm -f bin/webhook bin/reconciler bin/dryrun
 	rm -rf certs/

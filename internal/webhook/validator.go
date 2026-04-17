@@ -33,3 +33,19 @@ func ValidateRequest(count int, allowCrossNUMA bool, cfg Config) error {
 
 	return nil
 }
+
+// ValidateExplicitRequest checks that the requested count is satisfiable
+// by the given node pool mapping.
+func ValidateExplicitRequest(count int, poolMapping *NodePoolMapping, cfg Config) error {
+	if count <= 0 {
+		return fmt.Errorf("gpu-nic-pair count must be at least 1, got %d", count)
+	}
+	if count > len(poolMapping.Pairs) {
+		return fmt.Errorf("gpu-nic-pair count %d exceeds node pool %q pair count (%d)",
+			count, poolMapping.NodePoolLabel, len(poolMapping.Pairs))
+	}
+	if count > cfg.MaxPairsPerNode {
+		return fmt.Errorf("gpu-nic-pair count %d exceeds maximum per node (%d)", count, cfg.MaxPairsPerNode)
+	}
+	return nil
+}
