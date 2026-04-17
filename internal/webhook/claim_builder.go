@@ -304,6 +304,89 @@ func SinglePairTemplateName(nicIndex int, railIndex int, cfg Config) string {
 	return fmt.Sprintf("gpu-nic-pair-%d-rail%d-%s", nicIndex, railIndex, hash)
 }
 
+// buildDevicePinSelector creates a CEL selector that pins to a specific device
+// by matching an attribute value.
+func buildDevicePinSelector(sel DeviceSelectorConfig, value string) resourcev1.DeviceSelector {
+	return resourcev1.DeviceSelector{
+		CEL: &resourcev1.CELDeviceSelector{
+			Expression: fmt.Sprintf(
+				`device.attributes[%q][%q] == %q`,
+				sel.AttributeDomain, sel.AttributeName, value,
+			),
+		},
+	}
+}
+
+// BuildExplicitPairClaimSpec builds a ResourceClaimSpec for one device set
+// where each device is pinned to an exact attribute value via CEL selectors.
+// No MatchAttribute constraint is used — the CEL selectors do the pinning.
+func BuildExplicitPairClaimSpec(nicIndex int, railIndex int, pair ExplicitPairMapping, cfg Config) (resourcev1.ResourceClaimSpec, error) {
+	keys := cfg.DeviceSelectorKeys()
+
+	requests := make([]resourcev1.DeviceRequest, 0, len(keys))
+	var configs []resourcev1.DeviceClaimConfiguration
+
+	for _, role := range keys {
+		sel := cfg.PairingConfig.DeviceSelectors[role]
+		deviceID := pair.Devices[role]
+
+		req := resourcev1.DeviceRequest{
+			Name: role,
+			Exactly: &resourcev1.ExactDeviceRequest{
+				DeviceClassName: sel.DeviceClassName,
+				Count:           1,
+				AllocationMode:  resourcev1.DeviceAllocationModeExactCount,
+			},
+		}
+
+		pinSelector := buildDevicePinSelector(sel, deviceID)
+		selectors := []resourcev1.DeviceSelector{pinSelector}
+
+		if role == "nic" {
+			nicSelectors := buildNICSelectors(railIndex, cfg)
+			selectors = append(selectors, nicSelectors...)
+
+			nicParams := buildNICParameters(nicIndex, railIndex, cfg)
+			paramsJSON, err := json.Marshal(nicParams)
+			if err != nil {
+				return resourcev1.ResourceClaimSpec{}, fmt.Errorf("failed to marshal NIC parameters: %w", err)
+			}
+			configs = append(configs, resourcev1.DeviceClaimConfiguration{
+				Requests: []string{"nic"},
+				DeviceConfiguration: resourcev1.DeviceConfiguration{
+					Opaque: &resourcev1.OpaqueDeviceConfiguration{
+						Driver:     "dra.net",
+						Parameters: runtime.RawExtension{Raw: paramsJSON},
+					},
+				},
+			})
+		}
+
+		req.Exactly.Selectors = selectors
+		requests = append(requests, req)
+	}
+
+	return resourcev1.ResourceClaimSpec{
+		Devices: resourcev1.DeviceClaim{
+			Requests: requests,
+			Config:   configs,
+		},
+	}, nil
+}
+
+// ExplicitPairTemplateName returns a deterministic name for an explicit-mode
+// ResourceClaimTemplate, incorporating all device IDs for uniqueness.
+func ExplicitPairTemplateName(nicIndex int, railIndex int, pair ExplicitPairMapping, cfg Config) string {
+	h := sha256.New()
+	data, _ := json.Marshal(cfg)
+	h.Write(data)
+	pairData, _ := json.Marshal(pair.Devices)
+	h.Write(pairData)
+	_, _ = fmt.Fprintf(h, "explicit:nic:%d:rail:%d", nicIndex, railIndex)
+	hash := fmt.Sprintf("%x", h.Sum(nil))[:8]
+	return fmt.Sprintf("gpu-nic-pair-%d-rail%d-%s", nicIndex, railIndex, hash)
+}
+
 // TemplateName returns a deterministic name for a ResourceClaimTemplate
 // based on count, NUMA mode, config, and selected rail indices.
 func TemplateName(count int, numaConstrained bool, cfg Config, railIndices []int) string {

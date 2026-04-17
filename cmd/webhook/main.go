@@ -30,13 +30,27 @@ func main() {
 		configName      string
 	)
 
+	var dryRun bool
+
 	flag.IntVar(&port, "port", 8443, "Webhook server port")
 	flag.StringVar(&certDir, "cert-dir", "/certs", "Directory containing TLS certificates")
 	flag.StringVar(&certFile, "tls-cert-file", "tls.crt", "TLS certificate file name (relative to cert-dir)")
 	flag.StringVar(&keyFile, "tls-key-file", "tls.key", "TLS key file name (relative to cert-dir)")
 	flag.StringVar(&configNamespace, "config-namespace", "dra-webhook-system", "Namespace of the webhook ConfigMap")
 	flag.StringVar(&configName, "config-name", "dra-gpu-nic-webhook-config", "Name of the webhook ConfigMap")
+	flag.BoolVar(&dryRun, "dry-run", false, "Offline config validation (use the standalone 'dryrun' binary instead)")
 	flag.Parse()
+
+	if dryRun {
+		fmt.Fprintln(os.Stderr, "The --dry-run flag is not supported on the webhook server.")
+		fmt.Fprintln(os.Stderr, "Use the standalone dryrun binary for offline config validation:")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "  dryrun capture --kubeconfig ~/.kube/config -o cluster-state.json")
+		fmt.Fprintln(os.Stderr, "  dryrun simulate --state cluster-state.json --config config.yaml --count 2")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Build: go build -o bin/dryrun ./cmd/dryrun/")
+		os.Exit(1)
+	}
 
 	// Create in-cluster Kubernetes client
 	restConfig, err := rest.InClusterConfig()

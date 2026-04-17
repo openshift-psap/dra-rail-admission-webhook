@@ -68,39 +68,70 @@ func (m *Mutator) Mutate(ctx context.Context, pod *corev1.Pod, namespace string)
 		return nil, fmt.Errorf("allocator not configured")
 	}
 
-	result, err := m.Allocator.Allocate(ctx, pod, namespace, count, numaConstrained)
-	if err != nil {
-		return nil, fmt.Errorf("allocation failed: %w", err)
-	}
-
-	// Create one ResourceClaimTemplate per GPU-NIC pair
+	var nodeName string
 	templateNames := make([]string, count)
-	for i := 0; i < count; i++ {
-		railIdx := result.RailIndices[i]
 
-		spec, err := BuildSinglePairClaimSpec(i, railIdx, m.Config)
+	if m.Config.IsExplicitMode() {
+		result, err := m.Allocator.AllocateExplicit(ctx, pod, namespace, count, numaConstrained)
 		if err != nil {
-			return nil, fmt.Errorf("failed to build claim spec for pair %d: %w", i, err)
+			return nil, fmt.Errorf("explicit allocation failed: %w", err)
+		}
+		nodeName = result.NodeName
+
+		for i, pair := range result.Pairs {
+			mapping := ExplicitPairMapping{Devices: pair.Devices, Rail: pair.RailIndex}
+			spec, err := BuildExplicitPairClaimSpec(pair.NICIndex, pair.RailIndex, mapping, m.Config)
+			if err != nil {
+				return nil, fmt.Errorf("failed to build explicit claim spec for pair %d: %w", i, err)
+			}
+
+			name := ExplicitPairTemplateName(pair.NICIndex, pair.RailIndex, mapping, m.Config)
+			if err := m.ensureClaimTemplate(ctx, namespace, name, spec); err != nil {
+				return nil, fmt.Errorf("failed to ensure claim template for pair %d: %w", i, err)
+			}
+			templateNames[i] = name
 		}
 
-		name := SinglePairTemplateName(i, railIdx, m.Config)
-		if err := m.ensureClaimTemplate(ctx, namespace, name, spec); err != nil {
-			return nil, fmt.Errorf("failed to ensure claim template for pair %d: %w", i, err)
+		klog.InfoS("Mutating pod (explicit mode)", "namespace", namespace, "pod", podName(pod),
+			"gpu-nic-pairs", count, "numaConstrained", numaConstrained,
+			"node", nodeName, "templates", templateNames)
+	} else {
+		result, err := m.Allocator.Allocate(ctx, pod, namespace, count, numaConstrained)
+		if err != nil {
+			return nil, fmt.Errorf("allocation failed: %w", err)
+		}
+		nodeName = result.NodeName
+
+		for i := 0; i < count; i++ {
+			railIdx := result.RailIndices[i]
+
+			spec, err := BuildSinglePairClaimSpec(i, railIdx, m.Config)
+			if err != nil {
+				return nil, fmt.Errorf("failed to build claim spec for pair %d: %w", i, err)
+			}
+
+			name := SinglePairTemplateName(i, railIdx, m.Config)
+			if err := m.ensureClaimTemplate(ctx, namespace, name, spec); err != nil {
+				return nil, fmt.Errorf("failed to ensure claim template for pair %d: %w", i, err)
+			}
+			templateNames[i] = name
 		}
 
-		templateNames[i] = name
+		klog.InfoS("Mutating pod", "namespace", namespace, "pod", podName(pod),
+			"gpu-nic-pairs", count, "numaConstrained", numaConstrained,
+			"node", nodeName, "rails", result.RailIndices,
+			"templates", templateNames)
 	}
 
 	// Build JSON patch: N separate ResourceClaims + node affinity
-	patch, err := buildSeparateClaimsPatch(pod, count, templateNames, result.NodeName, containerIndices)
+	requestNames := []string{"gpu", "nic"}
+	if m.Config.IsExplicitMode() {
+		requestNames = m.Config.DeviceSelectorKeys()
+	}
+	patch, err := buildSeparateClaimsPatch(pod, count, templateNames, nodeName, containerIndices, requestNames)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build patch: %w", err)
 	}
-
-	klog.InfoS("Mutating pod", "namespace", namespace, "pod", podName(pod),
-		"gpu-nic-pairs", count, "numaConstrained", numaConstrained,
-		"node", result.NodeName, "rails", result.RailIndices,
-		"templates", templateNames)
 
 	return patch, nil
 }
@@ -173,7 +204,7 @@ func (m *Mutator) ensureClaimTemplate(ctx context.Context, namespace, name strin
 // buildSeparateClaimsPatch creates the JSON patch for N separate ResourceClaims
 // (one per GPU-NIC pair) and adds a nodeAffinity to pin the pod to the
 // allocator-selected node.
-func buildSeparateClaimsPatch(pod *corev1.Pod, count int, templateNames []string, nodeName string, containerIndices []int) ([]byte, error) {
+func buildSeparateClaimsPatch(pod *corev1.Pod, count int, templateNames []string, nodeName string, containerIndices []int, requestNames []string) ([]byte, error) {
 	var patches []jsonPatchOp
 
 	// 1. Remove dra.llm-d.io/gpu-nic-pair from resources.requests and limits
@@ -219,15 +250,14 @@ func buildSeparateClaimsPatch(pod *corev1.Pod, count int, templateNames []string
 	}
 
 	// 3. Add resources.claims to each container — each pair contributes
-	//    a "gpu" and "nic" request from its own claim.
+	//    one request per device role from its own claim.
 	for _, idx := range containerIndices {
-		claims := make([]corev1.ResourceClaim, 0, count*2)
+		claims := make([]corev1.ResourceClaim, 0, count*len(requestNames))
 		for i := 0; i < count; i++ {
 			claimName := fmt.Sprintf("gpu-nic-pair-%d", i)
-			claims = append(claims,
-				corev1.ResourceClaim{Name: claimName, Request: "gpu"},
-				corev1.ResourceClaim{Name: claimName, Request: "nic"},
-			)
+			for _, reqName := range requestNames {
+				claims = append(claims, corev1.ResourceClaim{Name: claimName, Request: reqName})
+			}
 		}
 
 		c := pod.Spec.Containers[idx]

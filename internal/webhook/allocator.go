@@ -32,6 +32,20 @@ type AllocationResult struct {
 	RailIndices []int
 }
 
+// ExplicitAllocationResult is returned by AllocateExplicit with the selected
+// node and specific device pairs from the explicit mapping.
+type ExplicitAllocationResult struct {
+	NodeName string
+	Pairs    []SelectedPair
+}
+
+// SelectedPair holds the identifiers for one selected device set.
+type SelectedPair struct {
+	Devices   map[string]string // deviceRole → attribute value
+	RailIndex int
+	NICIndex  int
+}
+
 // Allocator handles cluster-level GPU-NIC pair allocation. It scans
 // ResourceSlices for per-node NIC availability, respects pod scheduling
 // constraints (nodeSelector, nodeAffinity, podAntiAffinity, podAffinity),
@@ -137,7 +151,8 @@ func (a *Allocator) Allocate(ctx context.Context, pod *corev1.Pod, namespace str
 	// 5. Find a node with enough free slots
 	for _, nodeName := range candidateNodes {
 		slots := nodeSlots[nodeName]
-		rails := selectSlots(slots, count, numaConstrained, a.Config.MaxPairsPerNUMA)
+		numaAware := numaConstrained && !a.Config.DisableNUMAPacking
+		rails := selectSlots(slots, count, numaAware, a.Config.MaxPairsPerNUMA)
 		if len(rails) >= count {
 			selected := rails[:count]
 
@@ -159,6 +174,249 @@ func (a *Allocator) Allocate(ctx context.Context, pod *corev1.Pod, namespace str
 
 	return nil, fmt.Errorf("no node has %d available GPU-NIC pairs with given constraints (candidates: %v)",
 		count, candidateNodes)
+}
+
+// AllocateExplicit finds a node with enough free device pairs from the explicit
+// mapping. It returns the chosen node and the specific device pairs to use.
+func (a *Allocator) AllocateExplicit(ctx context.Context, pod *corev1.Pod, namespace string, count int, numaConstrained bool) (*ExplicitAllocationResult, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.expirePending()
+
+	if a.Config.PairingConfig == nil {
+		return nil, fmt.Errorf("explicit pairing config not set")
+	}
+
+	allNodes, err := a.KubeClient.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list nodes: %w", err)
+	}
+
+	nodeMap := make(map[string]*corev1.Node, len(allNodes.Items))
+	for i := range allNodes.Items {
+		nodeMap[allNodes.Items[i].Name] = &allNodes.Items[i]
+	}
+
+	// Build per-node available pair indices
+	type nodeInfo struct {
+		name        string
+		poolMapping *NodePoolMapping
+		available   []int // indices into poolMapping.Pairs that are available
+	}
+	var candidates []nodeInfo
+
+	for _, node := range allNodes.Items {
+		poolMapping, err := a.Config.GetNodePoolMapping(node.Labels)
+		if err != nil {
+			continue
+		}
+
+		if !matchesNodeSelector(pod, &node) || !matchesNodeAffinity(pod, &node) {
+			continue
+		}
+
+		avail, err := a.scanExplicitAvailability(ctx, poolMapping, node.Name)
+		if err != nil {
+			klog.V(3).ErrorS(err, "Failed to scan explicit availability", "node", node.Name)
+			continue
+		}
+
+		// Remove pending pairs
+		var filtered []int
+		for _, idx := range avail {
+			pendingKey := fmt.Sprintf("%s:explicit:%d", node.Name, idx)
+			if _, isPending := a.pending[pendingKey]; !isPending {
+				filtered = append(filtered, idx)
+			}
+		}
+
+		if len(filtered) >= count {
+			candidates = append(candidates, nodeInfo{
+				name:        node.Name,
+				poolMapping: poolMapping,
+				available:   filtered,
+			})
+		}
+	}
+
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("no node has %d available explicit device pairs", count)
+	}
+
+	// Pod anti-affinity / affinity filtering
+	candidateNames := make([]string, len(candidates))
+	for i, c := range candidates {
+		candidateNames[i] = c.name
+	}
+
+	// Build a fake nodeSlots map so filterNodesByConstraints works
+	dummySlots := make(map[string][]NICSlot)
+	for _, c := range candidates {
+		dummySlots[c.name] = []NICSlot{{NodeName: c.name}}
+	}
+	filteredNames, err := a.filterNodesByConstraints(ctx, pod, namespace, dummySlots)
+	if err != nil {
+		return nil, err
+	}
+	filteredSet := make(map[string]bool, len(filteredNames))
+	for _, n := range filteredNames {
+		filteredSet[n] = true
+	}
+
+	// Sort by packing: fewest free pairs first
+	sort.Slice(candidates, func(i, j int) bool {
+		return len(candidates[i].available) < len(candidates[j].available)
+	})
+
+	for _, c := range candidates {
+		if !filteredSet[c.name] {
+			continue
+		}
+
+		selected := selectExplicitPairs(c.poolMapping, c.available, count, numaConstrained, a.Config.MaxPairsPerNUMA)
+		if len(selected) < count {
+			continue
+		}
+
+		pairs := make([]SelectedPair, count)
+		now := time.Now()
+
+		for i, pairIdx := range selected {
+			pair := c.poolMapping.Pairs[pairIdx]
+			pairs[i] = SelectedPair{
+				Devices:   pair.Devices,
+				RailIndex: pair.Rail,
+				NICIndex:  i,
+			}
+			a.pending[fmt.Sprintf("%s:explicit:%d", c.name, pairIdx)] = now
+		}
+
+		klog.InfoS("Allocated explicit device pairs",
+			"node", c.name, "pairIndices", selected, "count", count,
+			"numaConstrained", numaConstrained)
+
+		return &ExplicitAllocationResult{
+			NodeName: c.name,
+			Pairs:    pairs,
+		}, nil
+	}
+
+	return nil, fmt.Errorf("no node satisfies scheduling constraints with %d available explicit pairs", count)
+}
+
+// selectExplicitPairs picks pair indices respecting NUMA constraints.
+// Uses the admin-provided NUMA field on each ExplicitPairMapping.
+func selectExplicitPairs(pool *NodePoolMapping, available []int, count int, numaConstrained bool, maxPerNUMA int) []int {
+	if !numaConstrained {
+		if len(available) >= count {
+			return available[:count]
+		}
+		return nil
+	}
+
+	// Group available pairs by their config-declared NUMA zone
+	numaGroups := make(map[int][]int)
+	for _, idx := range available {
+		numa := pool.Pairs[idx].NUMA
+		numaGroups[numa] = append(numaGroups[numa], idx)
+	}
+
+	// Pick the NUMA zone with enough pairs, preferring most-utilized (fewest free)
+	type zoneInfo struct {
+		zone  int
+		pairs []int
+	}
+	var eligible []zoneInfo
+	for zone, pairs := range numaGroups {
+		if len(pairs) >= count {
+			eligible = append(eligible, zoneInfo{zone: zone, pairs: pairs})
+		}
+	}
+	if len(eligible) == 0 {
+		return nil
+	}
+
+	sort.Slice(eligible, func(i, j int) bool {
+		if count < maxPerNUMA {
+			return len(eligible[i].pairs) < len(eligible[j].pairs)
+		}
+		return len(eligible[i].pairs) > len(eligible[j].pairs)
+	})
+
+	return eligible[0].pairs[:count]
+}
+
+// scanExplicitAvailability checks which pairs from the mapping have available
+// devices on the given node. Returns indices of available pairs.
+func (a *Allocator) scanExplicitAvailability(ctx context.Context, poolMapping *NodePoolMapping, nodeName string) ([]int, error) {
+	slices, err := a.ResourceClient.ResourceSlices().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list resource slices: %w", err)
+	}
+
+	type deviceKey struct {
+		driver string
+		value  string
+	}
+	available := make(map[deviceKey]bool)
+
+	for _, slice := range slices.Items {
+		sliceNode := ""
+		if slice.Spec.NodeName != nil {
+			sliceNode = *slice.Spec.NodeName
+		}
+		if sliceNode != nodeName {
+			continue
+		}
+
+		driver := slice.Spec.Driver
+
+		for _, device := range slice.Spec.Devices {
+			for role, sel := range a.Config.PairingConfig.DeviceSelectors {
+				if driver != sel.DeviceClassName {
+					continue
+				}
+
+				qualName := resourcev1.QualifiedName(sel.AttributeDomain + "/" + sel.AttributeName)
+				attr, ok := device.Attributes[qualName]
+				if !ok || attr.StringValue == nil {
+					continue
+				}
+
+				if role == "nic" {
+					if _, hasIF := device.Attributes[resourcev1.QualifiedName("dra.net/ifName")]; !hasIF {
+						continue
+					}
+					if a.Config.NICConfig.RDMARequired {
+						rdmaAttr, ok := device.Attributes[resourcev1.QualifiedName("dra.net/rdma")]
+						if !ok || rdmaAttr.BoolValue == nil || !*rdmaAttr.BoolValue {
+							continue
+						}
+					}
+				}
+
+				available[deviceKey{driver: sel.DeviceClassName, value: *attr.StringValue}] = true
+			}
+		}
+	}
+
+	var result []int
+	for i, pair := range poolMapping.Pairs {
+		allAvail := true
+		for role, deviceID := range pair.Devices {
+			sel := a.Config.PairingConfig.DeviceSelectors[role]
+			if !available[deviceKey{driver: sel.DeviceClassName, value: deviceID}] {
+				allAvail = false
+				break
+			}
+		}
+		if allAvail {
+			result = append(result, i)
+		}
+	}
+
+	return result, nil
 }
 
 // scanAvailableSlots reads ResourceSlices and returns available NIC slots
