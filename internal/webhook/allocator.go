@@ -274,7 +274,11 @@ func (a *Allocator) AllocateExplicit(ctx context.Context, pod *corev1.Pod, names
 			continue
 		}
 
-		selected := c.available[:count]
+		selected := selectExplicitPairs(c.poolMapping, c.available, count, numaConstrained, a.Config.MaxPairsPerNUMA)
+		if len(selected) < count {
+			continue
+		}
+
 		pairs := make([]SelectedPair, count)
 		now := time.Now()
 
@@ -289,7 +293,8 @@ func (a *Allocator) AllocateExplicit(ctx context.Context, pod *corev1.Pod, names
 		}
 
 		klog.InfoS("Allocated explicit device pairs",
-			"node", c.name, "pairIndices", selected, "count", count)
+			"node", c.name, "pairIndices", selected, "count", count,
+			"numaConstrained", numaConstrained)
 
 		return &ExplicitAllocationResult{
 			NodeName: c.name,
@@ -300,6 +305,48 @@ func (a *Allocator) AllocateExplicit(ctx context.Context, pod *corev1.Pod, names
 	return nil, fmt.Errorf("no node satisfies scheduling constraints with %d available explicit pairs", count)
 }
 
+// selectExplicitPairs picks pair indices respecting NUMA constraints.
+// Uses the admin-provided NUMA field on each ExplicitPairMapping.
+func selectExplicitPairs(pool *NodePoolMapping, available []int, count int, numaConstrained bool, maxPerNUMA int) []int {
+	if !numaConstrained {
+		if len(available) >= count {
+			return available[:count]
+		}
+		return nil
+	}
+
+	// Group available pairs by their config-declared NUMA zone
+	numaGroups := make(map[int][]int)
+	for _, idx := range available {
+		numa := pool.Pairs[idx].NUMA
+		numaGroups[numa] = append(numaGroups[numa], idx)
+	}
+
+	// Pick the NUMA zone with enough pairs, preferring most-utilized (fewest free)
+	type zoneInfo struct {
+		zone  int
+		pairs []int
+	}
+	var eligible []zoneInfo
+	for zone, pairs := range numaGroups {
+		if len(pairs) >= count {
+			eligible = append(eligible, zoneInfo{zone: zone, pairs: pairs})
+		}
+	}
+	if len(eligible) == 0 {
+		return nil
+	}
+
+	sort.Slice(eligible, func(i, j int) bool {
+		if count < maxPerNUMA {
+			return len(eligible[i].pairs) < len(eligible[j].pairs)
+		}
+		return len(eligible[i].pairs) > len(eligible[j].pairs)
+	})
+
+	return eligible[0].pairs[:count]
+}
+
 // scanExplicitAvailability checks which pairs from the mapping have available
 // devices on the given node. Returns indices of available pairs.
 func (a *Allocator) scanExplicitAvailability(ctx context.Context, poolMapping *NodePoolMapping, nodeName string) ([]int, error) {
@@ -308,8 +355,6 @@ func (a *Allocator) scanExplicitAvailability(ctx context.Context, poolMapping *N
 		return nil, fmt.Errorf("failed to list resource slices: %w", err)
 	}
 
-	// Build per-driver device attribute index for this node:
-	// driver → attributeValue → true (device exists and is available)
 	type deviceKey struct {
 		driver string
 		value  string
@@ -339,10 +384,15 @@ func (a *Allocator) scanExplicitAvailability(ctx context.Context, poolMapping *N
 					continue
 				}
 
-				// For NIC role, check availability (has ifName)
 				if role == "nic" {
 					if _, hasIF := device.Attributes[resourcev1.QualifiedName("dra.net/ifName")]; !hasIF {
 						continue
+					}
+					if a.Config.NICConfig.RDMARequired {
+						rdmaAttr, ok := device.Attributes[resourcev1.QualifiedName("dra.net/rdma")]
+						if !ok || rdmaAttr.BoolValue == nil || !*rdmaAttr.BoolValue {
+							continue
+						}
 					}
 				}
 
@@ -351,7 +401,6 @@ func (a *Allocator) scanExplicitAvailability(ctx context.Context, poolMapping *N
 		}
 	}
 
-	// Check each pair: all devices must be available
 	var result []int
 	for i, pair := range poolMapping.Pairs {
 		allAvail := true

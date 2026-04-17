@@ -129,6 +129,10 @@ func simulateCmd(args []string) {
 		fs.Usage()
 		os.Exit(1)
 	}
+	if count < 1 {
+		fmt.Fprintf(os.Stderr, "Error: --count must be at least 1, got %d\n", count)
+		os.Exit(1)
+	}
 
 	// Load cluster state
 	state, err := dryrun.LoadClusterState(statePath)

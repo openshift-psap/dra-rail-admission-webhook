@@ -446,6 +446,12 @@ func (p *PreflightChecker) CheckExplicitAvailability(ctx context.Context, count 
 					if _, hasIF := device.Attributes[resourcev1.QualifiedName("dra.net/ifName")]; !hasIF {
 						continue
 					}
+					if cfg.NICConfig.RDMARequired {
+						rdmaAttr, ok := device.Attributes[resourcev1.QualifiedName("dra.net/rdma")]
+						if !ok || rdmaAttr.BoolValue == nil || !*rdmaAttr.BoolValue {
+							continue
+						}
+					}
 				}
 				nodeDevices[nodeName][deviceKey{driver: sel.DeviceClassName, value: *attr.StringValue}] = true
 			}
