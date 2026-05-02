@@ -57,10 +57,11 @@ func (m *Mutator) Mutate(ctx context.Context, pod *corev1.Pod, namespace string)
 	}
 
 	// Determine NUMA constraint mode:
+	// - pcieRootOnly mode: never apply NUMA constraints
 	// - Full node (count == max): always cross-NUMA (no point constraining)
 	// - Explicit allow-cross-numa annotation: respect it for any count
 	// - Otherwise: enforce NUMA locality
-	numaConstrained := !allowCrossNUMA && count < m.Config.MaxPairsPerNode
+	numaConstrained := !allowCrossNUMA && count < m.Config.MaxPairsPerNode && !m.Config.IsPCIeRootOnlyMode()
 
 	// Use the cluster-level allocator to pick a node and rails,
 	// respecting pod affinity/anti-affinity constraints.

@@ -14,8 +14,9 @@ import (
 type PairingMode string
 
 const (
-	PairingModeAuto     PairingMode = "auto"
-	PairingModeExplicit PairingMode = "explicit"
+	PairingModeAuto         PairingMode = "auto"
+	PairingModeExplicit     PairingMode = "explicit"
+	PairingModePCIeRootOnly PairingMode = "pcieRootOnly"
 )
 
 // DeviceSelectorConfig defines how to identify a device type in CEL selectors.
@@ -23,6 +24,19 @@ type DeviceSelectorConfig struct {
 	DeviceClassName string `yaml:"deviceClassName"`
 	AttributeDomain string `yaml:"attributeDomain"`
 	AttributeName   string `yaml:"attributeName"`
+	// DriverName overrides DeviceClassName when matching ResourceSlice driver fields.
+	// Use this when the DeviceClass name differs from the underlying driver name
+	// (e.g., DeviceClass "dranet" uses driver "dra.net").
+	DriverName string `yaml:"driverName,omitempty"`
+}
+
+// ResourceSliceDriver returns the driver name used in ResourceSlices.
+// Falls back to DeviceClassName when DriverName is not set.
+func (d DeviceSelectorConfig) ResourceSliceDriver() string {
+	if d.DriverName != "" {
+		return d.DriverName
+	}
+	return d.DeviceClassName
 }
 
 // ExplicitPairMapping defines one set of co-located devices.
@@ -91,8 +105,9 @@ type Config struct {
 	PreflightCheck bool `yaml:"preflightCheck"`
 
 	// PairingMode selects how GPU-NIC pairing is determined:
-	// "auto" (default) uses MatchAttribute on pcieRoot.
+	// "auto" (default) uses MatchAttribute on pcieRoot + conditional NUMA constraints.
 	// "explicit" uses admin-defined device-to-device mappings with CEL selectors.
+	// "pcieRootOnly" uses MatchAttribute on pcieRoot without NUMA constraints.
 	PairingMode   PairingMode    `yaml:"pairingMode,omitempty"`
 	PairingConfig *PairingConfig `yaml:"pairingConfig,omitempty"`
 
@@ -120,6 +135,11 @@ func DefaultConfig() Config {
 // IsExplicitMode returns true when explicit device-to-device pairing is configured.
 func (c Config) IsExplicitMode() bool {
 	return c.PairingMode == PairingModeExplicit
+}
+
+// IsPCIeRootOnlyMode returns true when pcieRoot-only matching is configured (no NUMA constraints).
+func (c Config) IsPCIeRootOnlyMode() bool {
+	return c.PairingMode == PairingModePCIeRootOnly
 }
 
 // GetNodePoolMapping finds the NodePoolMapping for a node based on its labels.
@@ -154,8 +174,8 @@ func (c Config) DeviceSelectorKeys() []string {
 
 // ValidatePairingConfig validates the explicit pairing configuration.
 func ValidatePairingConfig(cfg Config) error {
-	if cfg.PairingMode != "" && cfg.PairingMode != PairingModeAuto && cfg.PairingMode != PairingModeExplicit {
-		return fmt.Errorf("unknown pairingMode %q, must be %q or %q", cfg.PairingMode, PairingModeAuto, PairingModeExplicit)
+	if cfg.PairingMode != "" && cfg.PairingMode != PairingModeAuto && cfg.PairingMode != PairingModeExplicit && cfg.PairingMode != PairingModePCIeRootOnly {
+		return fmt.Errorf("unknown pairingMode %q, must be %q, %q, or %q", cfg.PairingMode, PairingModeAuto, PairingModeExplicit, PairingModePCIeRootOnly)
 	}
 	if !cfg.IsExplicitMode() {
 		return nil

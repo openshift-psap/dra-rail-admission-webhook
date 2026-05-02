@@ -44,6 +44,10 @@ data:
     # but gives immediate denial with descriptive error instead of
     # leaving pods stuck in Pending.
     preflightCheck: false
+    # pairingMode: "pcieRootOnly"
+    # Uses pcieRoot MatchAttribute matching without NUMA constraints.
+    # Useful on clusters where NUMA locality is not required but
+    # GPU-NIC PCIe affinity still matters.
   reconciler.yaml: |
     # How often to check for orphaned resources
     interval: "5m"

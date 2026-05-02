@@ -384,7 +384,7 @@ func TestBuildExplicitPairClaimSpec_GPUAndNICSelectors(t *testing.T) {
 	if len(gpuReq.Exactly.Selectors) != 1 {
 		t.Fatalf("GPU: expected 1 selector, got %d", len(gpuReq.Exactly.Selectors))
 	}
-	expectedGPUCEL := `device.attributes["resource.kubernetes.io"]["pciBusID"] == "0008:06:00.0"`
+	expectedGPUCEL := `"resource.kubernetes.io" in device.attributes && "pciBusID" in device.attributes["resource.kubernetes.io"] && device.attributes["resource.kubernetes.io"]["pciBusID"] == "0008:06:00.0"`
 	if gpuReq.Exactly.Selectors[0].CEL.Expression != expectedGPUCEL {
 		t.Errorf("GPU CEL = %q, want %q", gpuReq.Exactly.Selectors[0].CEL.Expression, expectedGPUCEL)
 	}
@@ -400,7 +400,7 @@ func TestBuildExplicitPairClaimSpec_GPUAndNICSelectors(t *testing.T) {
 	if len(nicReq.Exactly.Selectors) != 2 {
 		t.Fatalf("NIC: expected 2 selectors (pin + rail/RDMA), got %d", len(nicReq.Exactly.Selectors))
 	}
-	expectedNICPin := `device.attributes["dra.net"]["rdmaDevice"] == "mlx5_0"`
+	expectedNICPin := `"dra.net" in device.attributes && "rdmaDevice" in device.attributes["dra.net"] && device.attributes["dra.net"]["rdmaDevice"] == "mlx5_0"`
 	if nicReq.Exactly.Selectors[0].CEL.Expression != expectedNICPin {
 		t.Errorf("NIC pin CEL = %q, want %q", nicReq.Exactly.Selectors[0].CEL.Expression, expectedNICPin)
 	}
@@ -499,7 +499,7 @@ func TestBuildExplicitPairClaimSpec_ThreeDeviceRoles(t *testing.T) {
 	if spec.Devices.Requests[0].Name != "fpga" {
 		t.Errorf("first request = %q, want fpga", spec.Devices.Requests[0].Name)
 	}
-	expectedFPGA := `device.attributes["fpga.vendor.com"]["serialNumber"] == "FPGA-001"`
+	expectedFPGA := `"fpga.vendor.com" in device.attributes && "serialNumber" in device.attributes["fpga.vendor.com"] && device.attributes["fpga.vendor.com"]["serialNumber"] == "FPGA-001"`
 	if spec.Devices.Requests[0].Exactly.Selectors[0].CEL.Expression != expectedFPGA {
 		t.Errorf("FPGA CEL = %q, want %q", spec.Devices.Requests[0].Exactly.Selectors[0].CEL.Expression, expectedFPGA)
 	}
@@ -591,7 +591,7 @@ func TestBuildExplicitPairClaimSpec_IBMCloudH100_SinglePair(t *testing.T) {
 	if gpu.Exactly.DeviceClassName != "gpu.nvidia.com" {
 		t.Errorf("GPU class = %q, want gpu.nvidia.com", gpu.Exactly.DeviceClassName)
 	}
-	expectedGPU := `device.attributes["resource.kubernetes.io"]["pciBusID"] == "0000:a4:00.0"`
+	expectedGPU := `"resource.kubernetes.io" in device.attributes && "pciBusID" in device.attributes["resource.kubernetes.io"] && device.attributes["resource.kubernetes.io"]["pciBusID"] == "0000:a4:00.0"`
 	if gpu.Exactly.Selectors[0].CEL.Expression != expectedGPU {
 		t.Errorf("GPU CEL = %q\nwant    %q", gpu.Exactly.Selectors[0].CEL.Expression, expectedGPU)
 	}
@@ -607,7 +607,7 @@ func TestBuildExplicitPairClaimSpec_IBMCloudH100_SinglePair(t *testing.T) {
 	if nic.Exactly.DeviceClassName != "dranet" {
 		t.Errorf("NIC class = %q, want dranet", nic.Exactly.DeviceClassName)
 	}
-	expectedNICPin := `device.attributes["dra.net"]["ifName"] == "enp163s0"`
+	expectedNICPin := `"dra.net" in device.attributes && "ifName" in device.attributes["dra.net"] && device.attributes["dra.net"]["ifName"] == "enp163s0"`
 	if nic.Exactly.Selectors[0].CEL.Expression != expectedNICPin {
 		t.Errorf("NIC pin CEL = %q\nwant         %q", nic.Exactly.Selectors[0].CEL.Expression, expectedNICPin)
 	}
@@ -650,14 +650,14 @@ func TestBuildExplicitPairClaimSpec_IBMCloudH100_NUMA1Pair(t *testing.T) {
 	}
 
 	// GPU pinned to 0000:ea:00.0
-	expectedGPU := `device.attributes["resource.kubernetes.io"]["pciBusID"] == "0000:ea:00.0"`
+	expectedGPU := `"resource.kubernetes.io" in device.attributes && "pciBusID" in device.attributes["resource.kubernetes.io"] && device.attributes["resource.kubernetes.io"]["pciBusID"] == "0000:ea:00.0"`
 	if spec.Devices.Requests[0].Exactly.Selectors[0].CEL.Expression != expectedGPU {
 		t.Errorf("GPU CEL = %q\nwant    %q",
 			spec.Devices.Requests[0].Exactly.Selectors[0].CEL.Expression, expectedGPU)
 	}
 
 	// NIC pinned to enp233s0
-	expectedNICPin := `device.attributes["dra.net"]["ifName"] == "enp233s0"`
+	expectedNICPin := `"dra.net" in device.attributes && "ifName" in device.attributes["dra.net"] && device.attributes["dra.net"]["ifName"] == "enp233s0"`
 	if spec.Devices.Requests[1].Exactly.Selectors[0].CEL.Expression != expectedNICPin {
 		t.Errorf("NIC pin CEL = %q\nwant         %q",
 			spec.Devices.Requests[1].Exactly.Selectors[0].CEL.Expression, expectedNICPin)
@@ -865,5 +865,33 @@ func TestTemplateName_DifferentRails(t *testing.T) {
 	name3 := TemplateName(1, true, cfg, []int{3})
 	if name2 != name3 {
 		t.Errorf("same rail indices should produce same name: %q vs %q", name2, name3)
+	}
+}
+
+func TestBuildClaimTemplateSpec_PCIeRootOnly(t *testing.T) {
+	cfg := testConfig()
+	spec, err := BuildClaimTemplateSpec(6, false, cfg, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(spec.Devices.Requests) != 12 {
+		t.Fatalf("expected 12 requests, got %d", len(spec.Devices.Requests))
+	}
+
+	if len(spec.Devices.Constraints) != 6 {
+		t.Fatalf("expected 6 constraints (PCIe only, no NUMA), got %d", len(spec.Devices.Constraints))
+	}
+
+	for _, c := range spec.Devices.Constraints {
+		if string(*c.MatchAttribute) != PCIeRootAttribute {
+			t.Errorf("expected only PCIe root constraints, got %q", *c.MatchAttribute)
+		}
+	}
+
+	for _, c := range spec.Devices.Constraints {
+		if string(*c.MatchAttribute) == NUMANodeAttribute {
+			t.Error("pcieRootOnly mode should not have NUMA constraints")
+		}
 	}
 }
