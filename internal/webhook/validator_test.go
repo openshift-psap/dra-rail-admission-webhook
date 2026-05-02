@@ -105,6 +105,34 @@ func TestValidateRequest(t *testing.T) {
 	}
 }
 
+func TestValidateRequest_PCIeRootOnlyMode(t *testing.T) {
+	cfg := Config{
+		MaxPairsPerNUMA: 4,
+		MaxPairsPerNode: 8,
+		PairingMode:     PairingModePCIeRootOnly,
+	}
+
+	// 6 pairs without cross-NUMA annotation should succeed in pcieRootOnly mode
+	if err := ValidateRequest(6, false, cfg); err != nil {
+		t.Errorf("pcieRootOnly mode should allow 6 pairs without cross-NUMA: %v", err)
+	}
+
+	// 7 pairs should also succeed
+	if err := ValidateRequest(7, false, cfg); err != nil {
+		t.Errorf("pcieRootOnly mode should allow 7 pairs without cross-NUMA: %v", err)
+	}
+
+	// 8 pairs (full node) should succeed
+	if err := ValidateRequest(8, false, cfg); err != nil {
+		t.Errorf("pcieRootOnly mode should allow 8 pairs: %v", err)
+	}
+
+	// 9 pairs should still fail (exceeds MaxPairsPerNode)
+	if err := ValidateRequest(9, false, cfg); err == nil {
+		t.Error("pcieRootOnly mode should still enforce MaxPairsPerNode")
+	}
+}
+
 func TestValidateRequest_RailsCount(t *testing.T) {
 	cfg := Config{
 		MaxPairsPerNUMA: 4,

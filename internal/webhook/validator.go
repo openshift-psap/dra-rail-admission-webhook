@@ -23,7 +23,7 @@ func ValidateRequest(count int, allowCrossNUMA bool, cfg Config) error {
 		return nil
 	}
 
-	if count > cfg.MaxPairsPerNUMA && !allowCrossNUMA {
+	if count > cfg.MaxPairsPerNUMA && !allowCrossNUMA && !cfg.IsPCIeRootOnlyMode() {
 		return fmt.Errorf(
 			"gpu-nic-pair count %d exceeds single NUMA zone capacity (%d); "+
 				"set annotation %s=true to allow cross-NUMA allocation",

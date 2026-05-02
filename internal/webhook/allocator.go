@@ -374,7 +374,7 @@ func (a *Allocator) scanExplicitAvailability(ctx context.Context, poolMapping *N
 
 		for _, device := range slice.Spec.Devices {
 			for role, sel := range a.Config.PairingConfig.DeviceSelectors {
-				if driver != sel.DeviceClassName {
+				if driver != sel.ResourceSliceDriver() {
 					continue
 				}
 

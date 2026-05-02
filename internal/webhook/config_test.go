@@ -291,6 +291,44 @@ func TestDeviceSelectorKeys(t *testing.T) {
 	}
 }
 
+func TestIsPCIeRootOnlyMode(t *testing.T) {
+	cfg := Config{PairingMode: PairingModePCIeRootOnly}
+	if !cfg.IsPCIeRootOnlyMode() {
+		t.Error("expected IsPCIeRootOnlyMode() == true for pcieRootOnly mode")
+	}
+	if cfg.IsExplicitMode() {
+		t.Error("pcieRootOnly should not be explicit mode")
+	}
+
+	cfg.PairingMode = PairingModeAuto
+	if cfg.IsPCIeRootOnlyMode() {
+		t.Error("auto mode should not be pcieRootOnly")
+	}
+
+	cfg.PairingMode = ""
+	if cfg.IsPCIeRootOnlyMode() {
+		t.Error("empty mode should not be pcieRootOnly")
+	}
+}
+
+func TestValidatePairingConfig_PCIeRootOnlyMode(t *testing.T) {
+	cfg := Config{
+		MaxPairsPerNode: 8,
+		PairingMode:     PairingModePCIeRootOnly,
+	}
+	if err := ValidatePairingConfig(cfg); err != nil {
+		t.Errorf("pcieRootOnly mode should be valid without pairingConfig: %v", err)
+	}
+}
+
+func TestValidatePairingConfig_UnknownMode(t *testing.T) {
+	cfg := Config{PairingMode: "bogus"}
+	err := ValidatePairingConfig(cfg)
+	if err == nil {
+		t.Error("expected error for unknown pairing mode")
+	}
+}
+
 func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
 	if cfg.MaxPairsPerNUMA != 4 {
