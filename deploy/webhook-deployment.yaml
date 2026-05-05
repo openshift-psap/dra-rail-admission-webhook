@@ -6,7 +6,7 @@ metadata:
   labels:
     app: dra-gpu-nic-webhook
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: dra-gpu-nic-webhook
@@ -16,6 +16,8 @@ spec:
         app: dra-gpu-nic-webhook
     spec:
       serviceAccountName: dra-gpu-nic-webhook
+      imagePullSecrets:
+      - name: thihibrahi-quay-pull-secret
       topologySpreadConstraints:
       - maxSkew: 1
         topologyKey: kubernetes.io/hostname
@@ -25,7 +27,7 @@ spec:
             app: dra-gpu-nic-webhook
       containers:
       - name: webhook
-        image: quay.io/rh-ee-thibrahi/dra-net-webhook:webhook
+        image: quay.io/rh-ee-thibrahi/dra-net-webhook:webhook-dev
         imagePullPolicy: Always
         args:
         - --port=8443

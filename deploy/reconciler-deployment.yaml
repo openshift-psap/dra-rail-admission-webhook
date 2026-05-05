@@ -18,9 +18,11 @@ spec:
         app: dra-gpu-nic-reconciler
     spec:
       serviceAccountName: dra-gpu-nic-webhook
+      imagePullSecrets:
+      - name: thihibrahi-quay-pull-secret
       containers:
       - name: reconciler
-        image: quay.io/rh-ee-thibrahi/dra-net-webhook:reconciler
+        image: quay.io/rh-ee-thibrahi/dra-net-webhook:reconciler-dev
         imagePullPolicy: Always
         args:
         - --config-namespace=dra-webhook-system

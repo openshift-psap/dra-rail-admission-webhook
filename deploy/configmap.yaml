@@ -9,41 +9,31 @@ data:
     maxPairsPerNode: 8
     gpuDeviceClassName: gpu.nvidia.com
     nicDeviceClassName: dranet
+    transportMode: auto
     nicConfig:
-      mtu: 9000
+      mtu: 2044
       rdmaRequired: true
       interfacePrefix: "net"
       startingTableId: 100
-      crossRailCIDR: "10.0.0.0/13"
-      rails:
-        - subnet: "10.0.0.0/16"
-          gateway: "10.0.0.1"
-          ipv4Prefix: "10.0."
-        - subnet: "10.1.0.0/16"
-          gateway: "10.1.0.1"
-          ipv4Prefix: "10.1."
-        - subnet: "10.2.0.0/16"
-          gateway: "10.2.0.1"
-          ipv4Prefix: "10.2."
-        - subnet: "10.3.0.0/16"
-          gateway: "10.3.0.1"
-          ipv4Prefix: "10.3."
-        - subnet: "10.4.0.0/16"
-          gateway: "10.4.0.1"
-          ipv4Prefix: "10.4."
-        - subnet: "10.5.0.0/16"
-          gateway: "10.5.0.1"
-          ipv4Prefix: "10.5."
-        - subnet: "10.6.0.0/16"
-          gateway: "10.6.0.1"
-          ipv4Prefix: "10.6."
-        - subnet: "10.7.0.0/16"
-          gateway: "10.7.0.1"
-          ipv4Prefix: "10.7."
-    # Experimental: pre-flight check reads ResourceSlices to verify
-    # device availability before admitting pods. Adds admission latency
-    # but gives immediate denial with descriptive error instead of
-    # leaving pods stuck in Pending.
+      # IB rails: GPU+NIC PCIe address pairs from gpu-nic-pairing-map.sh
+      # List index = rail index. NUMA 0: rails 0-3, NUMA 1: rails 4-7
+      ibRails:
+        - gpu: "0001:00:00.0"
+          nic: "0101:00:00.0"
+        - gpu: "0002:00:00.0"
+          nic: "0102:00:00.0"
+        - gpu: "0003:00:00.0"
+          nic: "0103:00:00.0"
+        - gpu: "0008:00:00.0"
+          nic: "0104:00:00.0"
+        - gpu: "0009:00:00.0"
+          nic: "0105:00:00.0"
+        - gpu: "000a:00:00.0"
+          nic: "0106:00:00.0"
+        - gpu: "000b:00:00.0"
+          nic: "0107:00:00.0"
+        - gpu: "000c:00:00.0"
+          nic: "0108:00:00.0"
     preflightCheck: false
   reconciler.yaml: |
     # How often to check for orphaned resources
