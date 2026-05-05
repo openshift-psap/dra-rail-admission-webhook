@@ -190,16 +190,11 @@ func buildNICParameters(nicIndex int, railIndex int, cfg Config) NICParameters {
 			Table:       tableID,
 		})
 
-		// Cross-subnet routes to all other rails via this rail's gateway
-		for j, otherRail := range cfg.NICConfig.Rails {
-			if j == railIndex {
-				continue
-			}
-			params.Routes = append(params.Routes, Route{
-				Destination: otherRail.Subnet,
-				Gateway:     rail.Gateway,
-			})
-		}
+		// Cross-rail supernet route
+		params.Routes = append(params.Routes, Route{
+			Destination: cfg.NICConfig.CrossRailCIDR,
+			Gateway:     rail.Gateway,
+		})
 
 		// Default route in policy table
 		params.Routes = append(params.Routes, Route{

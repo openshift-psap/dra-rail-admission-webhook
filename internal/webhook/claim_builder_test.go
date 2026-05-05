@@ -206,6 +206,7 @@ func testRailConfig() Config {
 				{Subnet: "10.6.0.0/16", Gateway: "10.6.0.1", IPv4Prefix: "10.6."},
 				{Subnet: "10.7.0.0/16", Gateway: "10.7.0.1", IPv4Prefix: "10.7."},
 			},
+			CrossRailCIDR: "10.0.0.0/13",
 		},
 	}
 }
@@ -240,22 +241,21 @@ func TestBuildClaimTemplateSpec_RailRouting(t *testing.T) {
 		t.Errorf("rail 0 rule priority = %d, want 32765", params0.Rules[0].Priority)
 	}
 
-	// own-subnet(1) + cross-subnet(7) + default(1) = 9
-	if len(params0.Routes) != 9 {
-		t.Fatalf("rail 0: expected 9 routes, got %d", len(params0.Routes))
+	// own-subnet(1) + supernet(1) + default(1) = 3
+	if len(params0.Routes) != 3 {
+		t.Fatalf("rail 0: expected 3 routes, got %d", len(params0.Routes))
 	}
 
 	if params0.Routes[0].Destination != "10.0.0.0/16" || params0.Routes[0].Scope != 253 || params0.Routes[0].Table != 100 {
 		t.Errorf("rail 0 link route = %+v, want {10.0.0.0/16 scope:253 table:100}", params0.Routes[0])
 	}
 
-	if params0.Routes[1].Destination != "10.1.0.0/16" || params0.Routes[1].Gateway != "10.0.0.1" {
-		t.Errorf("rail 0 cross-subnet route[1] = %+v, want {10.1.0.0/16 gw:10.0.0.1}", params0.Routes[1])
+	if params0.Routes[1].Destination != "10.0.0.0/13" || params0.Routes[1].Gateway != "10.0.0.1" {
+		t.Errorf("rail 0 supernet route = %+v, want {10.0.0.0/13 gw:10.0.0.1}", params0.Routes[1])
 	}
 
-	lastRoute := params0.Routes[len(params0.Routes)-1]
-	if lastRoute.Destination != "0.0.0.0/0" || lastRoute.Gateway != "10.0.0.1" || lastRoute.Table != 100 {
-		t.Errorf("rail 0 default route = %+v, want {0.0.0.0/0 gw:10.0.0.1 table:100}", lastRoute)
+	if params0.Routes[2].Destination != "0.0.0.0/0" || params0.Routes[2].Gateway != "10.0.0.1" || params0.Routes[2].Table != 100 {
+		t.Errorf("rail 0 default route = %+v, want {0.0.0.0/0 gw:10.0.0.1 table:100}", params0.Routes[2])
 	}
 
 	var params1 NICParameters
@@ -269,8 +269,8 @@ func TestBuildClaimTemplateSpec_RailRouting(t *testing.T) {
 	if params1.Routes[0].Destination != "10.1.0.0/16" || params1.Routes[0].Table != 101 {
 		t.Errorf("rail 1 link route = %+v, want {10.1.0.0/16 table:101}", params1.Routes[0])
 	}
-	if params1.Routes[1].Destination != "10.0.0.0/16" || params1.Routes[1].Gateway != "10.1.0.1" {
-		t.Errorf("rail 1 cross-subnet route[1] = %+v, want {10.0.0.0/16 gw:10.1.0.1}", params1.Routes[1])
+	if params1.Routes[1].Destination != "10.0.0.0/13" || params1.Routes[1].Gateway != "10.1.0.1" {
+		t.Errorf("rail 1 supernet route = %+v, want {10.0.0.0/13 gw:10.1.0.1}", params1.Routes[1])
 	}
 }
 
@@ -401,6 +401,28 @@ func TestTemplateName_Deterministic(t *testing.T) {
 	name4 := TemplateName(4, false, cfg, nil)
 	if name1 == name4 {
 		t.Error("different NUMA modes should produce different template names")
+	}
+}
+
+func TestBuildNICParameters_CrossRailCIDR(t *testing.T) {
+	cfg := testRailConfig()
+
+	params := buildNICParameters(0, 2, cfg)
+
+	if len(params.Routes) != 3 {
+		t.Fatalf("expected 3 routes, got %d", len(params.Routes))
+	}
+
+	if params.Routes[0].Destination != "10.2.0.0/16" || params.Routes[0].Scope != 253 || params.Routes[0].Table != 102 {
+		t.Errorf("own-subnet route = %+v, want {10.2.0.0/16 scope:253 table:102}", params.Routes[0])
+	}
+
+	if params.Routes[1].Destination != "10.0.0.0/13" || params.Routes[1].Gateway != "10.2.0.1" {
+		t.Errorf("supernet route = %+v, want {10.0.0.0/13 gw:10.2.0.1}", params.Routes[1])
+	}
+
+	if params.Routes[2].Destination != "0.0.0.0/0" || params.Routes[2].Gateway != "10.2.0.1" || params.Routes[2].Table != 102 {
+		t.Errorf("default route = %+v, want {0.0.0.0/0 gw:10.2.0.1 table:102}", params.Routes[2])
 	}
 }
 

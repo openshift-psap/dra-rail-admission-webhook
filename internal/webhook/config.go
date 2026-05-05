@@ -41,6 +41,7 @@ type NICConfig struct {
 	SourceSubnet    string       `yaml:"sourceSubnet,omitempty"`
 	StartingTableID int          `yaml:"startingTableId,omitempty"`
 	Rails           []RailConfig `yaml:"rails,omitempty"`
+	CrossRailCIDR   string       `yaml:"crossRailCIDR,omitempty"`
 }
 
 // Config holds the webhook configuration loaded from a ConfigMap.
