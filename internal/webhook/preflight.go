@@ -252,26 +252,32 @@ func (p *PreflightChecker) SelectAvailableRails(ctx context.Context, count int, 
 	return railIndices
 }
 
-// findAvailableRails checks ResourceSlices for NICs with ipv4 attributes
-// (indicating they're unallocated) and maps them to configured rails.
+// findAvailableRails checks ResourceSlices for available NICs and maps them to configured rails.
 func (p *PreflightChecker) findAvailableRails(ctx context.Context, count int, numaConstrained bool, cfg Config, claimedRails map[int]bool) ([]int, error) {
 	slices, err := p.ResourceClient.ResourceSlices().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list resource slices: %w", err)
 	}
 
-	// Build prefix → rail index map from config
-	prefixToRail := make(map[string]int, len(cfg.NICConfig.Rails))
-	for i, rail := range cfg.NICConfig.Rails {
-		prefixToRail[rail.IPv4Prefix] = i
-	}
-
-	// Collect available rails per node per NUMA zone
 	type nodeRails struct {
-		perNUMA map[int][]int // numaZone → list of available rail indices
-		all     []int         // all available rail indices (for cross-NUMA)
+		perNUMA map[int][]int
+		all     []int
 	}
 	nodes := make(map[string]*nodeRails)
+
+	// Build rail lookup based on transport mode
+	isIB := cfg.IsInfiniBand()
+	prefixToRail := make(map[string]int)
+	nicToRail := make(map[string]int)
+	if isIB {
+		for i, rail := range cfg.NICConfig.IBRails {
+			nicToRail[rail.NIC] = i
+		}
+	} else {
+		for i, rail := range cfg.NICConfig.Rails {
+			prefixToRail[rail.IPv4Prefix] = i
+		}
+	}
 
 	for _, slice := range slices.Items {
 		if slice.Spec.Driver != "dra.net" {
@@ -286,11 +292,6 @@ func (p *PreflightChecker) findAvailableRails(ctx context.Context, count int, nu
 		}
 
 		for _, device := range slice.Spec.Devices {
-			// Must have ipv4 (absent = allocated) and rdma if required
-			ipv4 := getIPv4(device)
-			if ipv4 == "" {
-				continue
-			}
 			if cfg.NICConfig.RDMARequired {
 				rdmaAttr, ok := device.Attributes[resourcev1.QualifiedName("dra.net/rdma")]
 				if !ok || rdmaAttr.BoolValue == nil || !*rdmaAttr.BoolValue {
@@ -298,16 +299,31 @@ func (p *PreflightChecker) findAvailableRails(ctx context.Context, count int, nu
 				}
 			}
 
-			// Match ipv4 to a configured rail
 			railIdx := -1
-			for prefix, idx := range prefixToRail {
-				if strings.HasPrefix(ipv4, prefix) {
-					railIdx = idx
-					break
+			if isIB {
+				pciAddr := getPCIAddress(device)
+				if pciAddr == "" {
+					continue
 				}
-			}
-			if railIdx < 0 {
-				continue // NIC on a subnet not in our rail config
+				idx, ok := nicToRail[pciAddr]
+				if !ok {
+					continue
+				}
+				railIdx = idx
+			} else {
+				ipv4 := getIPv4(device)
+				if ipv4 == "" {
+					continue
+				}
+				for prefix, idx := range prefixToRail {
+					if strings.HasPrefix(ipv4, prefix) {
+						railIdx = idx
+						break
+					}
+				}
+				if railIdx < 0 {
+					continue
+				}
 			}
 
 			numa := getNUMAZone(device)

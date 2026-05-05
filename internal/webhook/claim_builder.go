@@ -28,13 +28,16 @@ type NICInterface struct {
 // a single CEL expression (matching the cluster template pattern). Otherwise,
 // only the RDMA selector is applied when required.
 func buildNICSelectors(railIndex int, cfg Config) []resourcev1.DeviceSelector {
+	if cfg.IsInfiniBand() {
+		return buildIBNICSelectors(railIndex, cfg)
+	}
+
 	var selectors []resourcev1.DeviceSelector
 
 	hasRail := railIndex >= 0 && railIndex < len(cfg.NICConfig.Rails)
 
 	if hasRail {
 		rail := cfg.NICConfig.Rails[railIndex]
-		// Combined RDMA + subnet selector (matches cluster template pattern)
 		if cfg.NICConfig.RDMARequired {
 			selectors = append(selectors, resourcev1.DeviceSelector{
 				CEL: &resourcev1.CELDeviceSelector{
@@ -65,6 +68,53 @@ func buildNICSelectors(railIndex int, cfg Config) []resourcev1.DeviceSelector {
 	return selectors
 }
 
+// buildIBNICSelectors returns CEL selectors for an InfiniBand NIC.
+// Uses exact pciAddress match from ibRails config.
+func buildIBNICSelectors(railIndex int, cfg Config) []resourcev1.DeviceSelector {
+	var selectors []resourcev1.DeviceSelector
+
+	hasRail := railIndex >= 0 && railIndex < len(cfg.NICConfig.IBRails)
+
+	if hasRail {
+		ibRail := cfg.NICConfig.IBRails[railIndex]
+		selectors = append(selectors, resourcev1.DeviceSelector{
+			CEL: &resourcev1.CELDeviceSelector{
+				Expression: fmt.Sprintf(
+					`device.attributes["dra.net"].rdma == true && device.attributes["dra.net"].pciAddress == %q`,
+					ibRail.NIC,
+				),
+			},
+		})
+	} else if cfg.NICConfig.RDMARequired {
+		selectors = append(selectors, resourcev1.DeviceSelector{
+			CEL: &resourcev1.CELDeviceSelector{
+				Expression: `device.attributes["dra.net"].rdma == true && device.attributes["dra.net"].encapsulation == "infiniband"`,
+			},
+		})
+	}
+
+	return selectors
+}
+
+// buildIBGPUSelectors returns CEL selectors for a GPU in InfiniBand mode.
+// Pins the GPU to a specific PCIe bus ID from ibRails config.
+func buildIBGPUSelectors(railIndex int, cfg Config) []resourcev1.DeviceSelector {
+	if railIndex < 0 || railIndex >= len(cfg.NICConfig.IBRails) {
+		return nil
+	}
+	ibRail := cfg.NICConfig.IBRails[railIndex]
+	return []resourcev1.DeviceSelector{
+		{
+			CEL: &resourcev1.CELDeviceSelector{
+				Expression: fmt.Sprintf(
+					`device.attributes["resource.kubernetes.io"].pciBusID == %q`,
+					ibRail.GPU,
+				),
+			},
+		},
+	}
+}
+
 // BuildClaimTemplateSpec builds the ResourceClaimSpec for N GPU+NIC pairs.
 // railIndices maps each NIC position to a configured rail index (e.g., [2, 5]
 // means nic-0 uses rail 2, nic-1 uses rail 5). When rails are not configured,
@@ -83,21 +133,28 @@ func BuildClaimTemplateSpec(count int, numaConstrained bool, cfg Config, railInd
 		nicName := fmt.Sprintf("nic-%d", i)
 		nicRequests = append(nicRequests, nicName)
 
+		// Determine rail index for this NIC position
+		railIdx := -1
+		if len(railIndices) > i {
+			railIdx = railIndices[i]
+		}
+
 		// GPU request
-		requests = append(requests, resourcev1.DeviceRequest{
+		gpuReq := resourcev1.DeviceRequest{
 			Name: gpuName,
 			Exactly: &resourcev1.ExactDeviceRequest{
 				DeviceClassName: cfg.GPUDeviceClassName,
 				Count:           1,
 				AllocationMode:  resourcev1.DeviceAllocationModeExactCount,
 			},
-		})
-
-		// Determine rail index for this NIC position
-		railIdx := -1
-		if len(railIndices) > i {
-			railIdx = railIndices[i]
 		}
+		if cfg.IsInfiniBand() {
+			gpuSelectors := buildIBGPUSelectors(railIdx, cfg)
+			if len(gpuSelectors) > 0 {
+				gpuReq.Exactly.Selectors = gpuSelectors
+			}
+		}
+		requests = append(requests, gpuReq)
 
 		// NIC request with selectors
 		nicReq := resourcev1.DeviceRequest{
@@ -114,12 +171,14 @@ func BuildClaimTemplateSpec(count int, numaConstrained bool, cfg Config, railInd
 		}
 		requests = append(requests, nicReq)
 
-		// PCIe root pairing constraint
-		pcieRoot := resourcev1.FullyQualifiedName(PCIeRootAttribute)
-		constraints = append(constraints, resourcev1.DeviceConstraint{
-			Requests:       []string{gpuName, nicName},
-			MatchAttribute: &pcieRoot,
-		})
+		// PCIe root pairing constraint (Ethernet only — IB uses CEL pin selectors)
+		if !cfg.IsInfiniBand() {
+			pcieRoot := resourcev1.FullyQualifiedName(PCIeRootAttribute)
+			constraints = append(constraints, resourcev1.DeviceConstraint{
+				Requests:       []string{gpuName, nicName},
+				MatchAttribute: &pcieRoot,
+			})
+		}
 
 		// NIC opaque config
 		nicParams := buildNICParameters(i, railIdx, cfg)
@@ -168,6 +227,11 @@ func buildNICParameters(nicIndex int, railIndex int, cfg Config) NICParameters {
 			Name: fmt.Sprintf("%s%d", cfg.NICConfig.InterfacePrefix, nicIndex),
 			MTU:  cfg.NICConfig.MTU,
 		},
+	}
+
+	// IB fabric handles forwarding natively -- no L3 routing needed
+	if cfg.IsInfiniBand() {
+		return params
 	}
 
 	if railIndex >= 0 && railIndex < len(cfg.NICConfig.Rails) {
@@ -243,6 +307,12 @@ func BuildSinglePairClaimSpec(nicIndex int, railIndex int, cfg Config) (resource
 			AllocationMode:  resourcev1.DeviceAllocationModeExactCount,
 		},
 	}
+	if cfg.IsInfiniBand() {
+		gpuSelectors := buildIBGPUSelectors(railIndex, cfg)
+		if len(gpuSelectors) > 0 {
+			gpuReq.Exactly.Selectors = gpuSelectors
+		}
+	}
 
 	nicReq := resourcev1.DeviceRequest{
 		Name: "nic",
@@ -257,11 +327,13 @@ func BuildSinglePairClaimSpec(nicIndex int, railIndex int, cfg Config) (resource
 		nicReq.Exactly.Selectors = nicSelectors
 	}
 
-	// PCIe root pairing constraint
-	pcieRoot := resourcev1.FullyQualifiedName(PCIeRootAttribute)
-	constraint := resourcev1.DeviceConstraint{
-		Requests:       []string{"gpu", "nic"},
-		MatchAttribute: &pcieRoot,
+	var constraints []resourcev1.DeviceConstraint
+	if !cfg.IsInfiniBand() {
+		pcieRoot := resourcev1.FullyQualifiedName(PCIeRootAttribute)
+		constraints = append(constraints, resourcev1.DeviceConstraint{
+			Requests:       []string{"gpu", "nic"},
+			MatchAttribute: &pcieRoot,
+		})
 	}
 
 	// NIC opaque config
@@ -284,7 +356,7 @@ func BuildSinglePairClaimSpec(nicIndex int, railIndex int, cfg Config) (resource
 	return resourcev1.ResourceClaimSpec{
 		Devices: resourcev1.DeviceClaim{
 			Requests:    []resourcev1.DeviceRequest{gpuReq, nicReq},
-			Constraints: []resourcev1.DeviceConstraint{constraint},
+			Constraints: constraints,
 			Config:      []resourcev1.DeviceClaimConfiguration{nicConfig},
 		},
 	}, nil

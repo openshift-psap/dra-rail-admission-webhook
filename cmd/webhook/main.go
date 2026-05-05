@@ -71,12 +71,20 @@ func main() {
 		cfg = webhook.DefaultConfig()
 	}
 
+	if cfg.TransportMode == "" || cfg.TransportMode == "auto" {
+		resolved := webhook.ResolveTransportMode(ctx, kubeClient)
+		cfg.TransportMode = resolved
+		klog.InfoS("Auto-detected network transport", "transportMode", resolved)
+	}
+
 	klog.InfoS("Loaded configuration",
 		"maxPairsPerNUMA", cfg.MaxPairsPerNUMA,
 		"maxPairsPerNode", cfg.MaxPairsPerNode,
 		"gpuDeviceClass", cfg.GPUDeviceClassName,
 		"nicDeviceClass", cfg.NICDeviceClassName,
 		"nicMTU", cfg.NICConfig.MTU,
+		"transportMode", cfg.TransportMode,
+		"ibRails", len(cfg.NICConfig.IBRails),
 	)
 
 	// Create cluster-level allocator

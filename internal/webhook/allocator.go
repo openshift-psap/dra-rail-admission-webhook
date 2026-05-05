@@ -423,12 +423,18 @@ func (a *Allocator) scanExplicitAvailability(ctx context.Context, poolMapping *N
 // grouped by node. A NIC is available if it has the ipv4 attribute present
 // (allocated NICs have ipv4 stripped by the dranet driver).
 func (a *Allocator) scanAvailableSlots(ctx context.Context) (map[string][]NICSlot, error) {
+	if a.Config.IsInfiniBand() {
+		return a.scanIBSlots(ctx)
+	}
+	return a.scanEthernetSlots(ctx)
+}
+
+func (a *Allocator) scanEthernetSlots(ctx context.Context) (map[string][]NICSlot, error) {
 	slices, err := a.ResourceClient.ResourceSlices().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list resource slices: %w", err)
 	}
 
-	// Build prefix → rail index map
 	prefixToRail := make(map[string]int, len(a.Config.NICConfig.Rails))
 	for i, rail := range a.Config.NICConfig.Rails {
 		prefixToRail[rail.IPv4Prefix] = i
@@ -451,7 +457,7 @@ func (a *Allocator) scanAvailableSlots(ctx context.Context) (map[string][]NICSlo
 		for _, device := range slice.Spec.Devices {
 			ipv4 := getIPv4(device)
 			if ipv4 == "" {
-				continue // allocated
+				continue
 			}
 
 			if a.Config.NICConfig.RDMARequired {
@@ -461,7 +467,6 @@ func (a *Allocator) scanAvailableSlots(ctx context.Context) (map[string][]NICSlo
 				}
 			}
 
-			// Match to configured rail
 			railIdx := -1
 			for prefix, idx := range prefixToRail {
 				if strings.HasPrefix(ipv4, prefix) {
@@ -485,6 +490,72 @@ func (a *Allocator) scanAvailableSlots(ctx context.Context) (map[string][]NICSlo
 	}
 
 	return nodeSlots, nil
+}
+
+// scanIBSlots discovers available NIC slots on InfiniBand clusters by matching
+// device pciAddress attributes against configured ibRails entries.
+func (a *Allocator) scanIBSlots(ctx context.Context) (map[string][]NICSlot, error) {
+	slices, err := a.ResourceClient.ResourceSlices().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list resource slices: %w", err)
+	}
+
+	nicToRail := make(map[string]int, len(a.Config.NICConfig.IBRails))
+	for i, rail := range a.Config.NICConfig.IBRails {
+		nicToRail[rail.NIC] = i
+	}
+
+	nodeSlots := make(map[string][]NICSlot)
+
+	for _, slice := range slices.Items {
+		if slice.Spec.Driver != "dra.net" {
+			continue
+		}
+		nodeName := ""
+		if slice.Spec.NodeName != nil {
+			nodeName = *slice.Spec.NodeName
+		}
+		if nodeName == "" {
+			continue
+		}
+
+		for _, device := range slice.Spec.Devices {
+			pciAddr := getPCIAddress(device)
+			if pciAddr == "" {
+				continue
+			}
+
+			railIdx, ok := nicToRail[pciAddr]
+			if !ok {
+				continue
+			}
+
+			if a.Config.NICConfig.RDMARequired {
+				rdmaAttr, ok := device.Attributes[resourcev1.QualifiedName("dra.net/rdma")]
+				if !ok || rdmaAttr.BoolValue == nil || !*rdmaAttr.BoolValue {
+					continue
+				}
+			}
+
+			numa := getNUMAZone(device)
+
+			nodeSlots[nodeName] = append(nodeSlots[nodeName], NICSlot{
+				NodeName:  nodeName,
+				RailIndex: railIdx,
+				NUMAZone:  numa,
+			})
+		}
+	}
+
+	return nodeSlots, nil
+}
+
+func getPCIAddress(device resourcev1.Device) string {
+	attr, ok := device.Attributes[resourcev1.QualifiedName(NICPCIAddressAttribute)]
+	if !ok || attr.StringValue == nil {
+		return ""
+	}
+	return *attr.StringValue
 }
 
 // selectSlots picks 'count' rail indices from the available slots,

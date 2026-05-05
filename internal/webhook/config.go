@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 
+	resourcev1 "k8s.io/api/resource/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"gopkg.in/yaml.v3"
@@ -69,6 +70,13 @@ type Rule struct {
 	Priority int    `yaml:"priority" json:"priority"`
 }
 
+// IBRailEntry defines a GPU-NIC pair for InfiniBand rail configuration.
+// List index is the rail index.
+type IBRailEntry struct {
+	GPU string `yaml:"gpu"` // GPU PCIe bus ID (e.g., "0001:00:00.0")
+	NIC string `yaml:"nic"` // NIC PCI address (e.g., "0101:00:00.0")
+}
+
 // NICConfig holds network interface configuration.
 type NICConfig struct {
 	MTU             int          `yaml:"mtu"`
@@ -77,8 +85,9 @@ type NICConfig struct {
 	Routes          []Route      `yaml:"routes,omitempty"`
 	SourceSubnet    string       `yaml:"sourceSubnet,omitempty"`
 	StartingTableID int          `yaml:"startingTableId,omitempty"`
-	Rails           []RailConfig `yaml:"rails,omitempty"`
-	CrossRailCIDR   string       `yaml:"crossRailCIDR,omitempty"`
+	Rails           []RailConfig  `yaml:"rails,omitempty"`
+	CrossRailCIDR   string        `yaml:"crossRailCIDR,omitempty"`
+	IBRails         []IBRailEntry `yaml:"ibRails,omitempty"`
 }
 
 // Config holds the webhook configuration loaded from a ConfigMap.
@@ -100,6 +109,11 @@ type Config struct {
 	// DisableNUMAPacking disables the NUMA-aware packing strategy in the
 	// allocator. When true, the allocator does not prefer specific NUMA zones.
 	DisableNUMAPacking bool `yaml:"disableNUMAPacking,omitempty"`
+
+	// TransportMode selects the network transport: "auto" (default) detects
+	// from ResourceSlice encapsulation attributes at startup, "ethernet" uses
+	// IPv4-based rail selection, "infiniband" uses PCIe address-based pairing.
+	TransportMode string `yaml:"transportMode,omitempty"`
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -121,6 +135,33 @@ func DefaultConfig() Config {
 // IsExplicitMode returns true when explicit device-to-device pairing is configured.
 func (c Config) IsExplicitMode() bool {
 	return c.PairingMode == PairingModeExplicit
+}
+
+// IsInfiniBand returns true when the resolved transport mode is InfiniBand.
+func (c Config) IsInfiniBand() bool {
+	return c.TransportMode == "infiniband"
+}
+
+// ResolveTransportMode detects the network transport from ResourceSlices.
+// Scans dra.net devices for the encapsulation attribute. If any device
+// reports "infiniband", returns "infiniband"; otherwise "ethernet".
+func ResolveTransportMode(ctx context.Context, client kubernetes.Interface) string {
+	slices, err := client.ResourceV1().ResourceSlices().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return "ethernet"
+	}
+	for _, s := range slices.Items {
+		if s.Spec.Driver != "dra.net" {
+			continue
+		}
+		for _, d := range s.Spec.Devices {
+			attr, ok := d.Attributes[resourcev1.QualifiedName(EncapsulationAttribute)]
+			if ok && attr.StringValue != nil && *attr.StringValue == "infiniband" {
+				return "infiniband"
+			}
+		}
+	}
+	return "ethernet"
 }
 
 // GetNodePoolMapping finds the NodePoolMapping for a node based on its labels.

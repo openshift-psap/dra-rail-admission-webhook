@@ -524,6 +524,7 @@ func ibmCloudH100Config() Config {
 			RDMARequired:    true,
 			InterfacePrefix: "net",
 			StartingTableID: 100,
+			CrossRailCIDR:   "10.0.0.0/13",
 			Rails: []RailConfig{
 				{Subnet: "10.0.0.0/16", Gateway: "10.0.0.1", IPv4Prefix: "10.0."},
 				{Subnet: "10.1.0.0/16", Gateway: "10.1.0.1", IPv4Prefix: "10.1."},
@@ -741,34 +742,21 @@ func TestBuildExplicitPairClaimSpec_IBMCloudH100_CrossRailRouting(t *testing.T) 
 		t.Errorf("rule = %+v, want source=10.2.0.0/16 table=102", params.Rules[0])
 	}
 
-	// Routes: own-subnet(1) + cross-subnet(7) + default(1) = 9
-	if len(params.Routes) != 9 {
-		t.Fatalf("expected 9 routes, got %d", len(params.Routes))
+	// own-subnet(1) + supernet(1) + default(1) = 3
+	if len(params.Routes) != 3 {
+		t.Fatalf("expected 3 routes, got %d", len(params.Routes))
 	}
 
-	// Own subnet link-scope route
-	if params.Routes[0].Destination != "10.2.0.0/16" || params.Routes[0].Scope != 253 {
-		t.Errorf("link route = %+v, want 10.2.0.0/16 scope=253", params.Routes[0])
+	if params.Routes[0].Destination != "10.2.0.0/16" || params.Routes[0].Scope != 253 || params.Routes[0].Table != 102 {
+		t.Errorf("link route = %+v, want {10.2.0.0/16 scope:253 table:102}", params.Routes[0])
 	}
 
-	// Cross-subnet routes: should include 10.0, 10.1, 10.3, 10.4, 10.5, 10.6, 10.7
-	crossSubnets := make(map[string]bool)
-	for _, r := range params.Routes[1 : len(params.Routes)-1] {
-		crossSubnets[r.Destination] = true
-		if r.Gateway != "10.2.0.1" {
-			t.Errorf("cross-subnet route %q gateway = %q, want 10.2.0.1", r.Destination, r.Gateway)
-		}
-	}
-	for _, sub := range []string{"10.0.0.0/16", "10.1.0.0/16", "10.3.0.0/16", "10.4.0.0/16", "10.5.0.0/16", "10.6.0.0/16", "10.7.0.0/16"} {
-		if !crossSubnets[sub] {
-			t.Errorf("missing cross-subnet route for %s", sub)
-		}
+	if params.Routes[1].Destination != "10.0.0.0/13" || params.Routes[1].Gateway != "10.2.0.1" {
+		t.Errorf("supernet route = %+v, want {10.0.0.0/13 gw:10.2.0.1}", params.Routes[1])
 	}
 
-	// Default route in policy table
-	last := params.Routes[len(params.Routes)-1]
-	if last.Destination != "0.0.0.0/0" || last.Table != 102 {
-		t.Errorf("default route = %+v, want 0.0.0.0/0 table=102", last)
+	if params.Routes[2].Destination != "0.0.0.0/0" || params.Routes[2].Gateway != "10.2.0.1" || params.Routes[2].Table != 102 {
+		t.Errorf("default route = %+v, want {0.0.0.0/0 gw:10.2.0.1 table:102}", params.Routes[2])
 	}
 }
 
