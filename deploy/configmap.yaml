@@ -14,6 +14,7 @@ data:
       rdmaRequired: true
       interfacePrefix: "net"
       startingTableId: 100
+      crossRailCIDR: "10.0.0.0/13"
       rails:
         - subnet: "10.0.0.0/16"
           gateway: "10.0.0.1"
