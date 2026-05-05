@@ -426,6 +426,25 @@ func TestBuildNICParameters_CrossRailCIDR(t *testing.T) {
 	}
 }
 
+func TestBuildNICParameters_EmptyCrossRailCIDR(t *testing.T) {
+	cfg := testRailConfig()
+	cfg.NICConfig.CrossRailCIDR = ""
+
+	params := buildNICParameters(0, 0, cfg)
+
+	if len(params.Routes) != 2 {
+		t.Fatalf("expected 2 routes (own-subnet + default), got %d", len(params.Routes))
+	}
+
+	if params.Routes[0].Destination != "10.0.0.0/16" || params.Routes[0].Scope != 253 {
+		t.Errorf("own-subnet route = %+v, want {10.0.0.0/16 scope:253}", params.Routes[0])
+	}
+
+	if params.Routes[1].Destination != "0.0.0.0/0" || params.Routes[1].Gateway != "10.0.0.1" {
+		t.Errorf("default route = %+v, want {0.0.0.0/0 gw:10.0.0.1}", params.Routes[1])
+	}
+}
+
 func TestTemplateName_DifferentRails(t *testing.T) {
 	cfg := testRailConfig()
 

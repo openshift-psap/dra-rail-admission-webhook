@@ -191,10 +191,12 @@ func buildNICParameters(nicIndex int, railIndex int, cfg Config) NICParameters {
 		})
 
 		// Cross-rail supernet route
-		params.Routes = append(params.Routes, Route{
-			Destination: cfg.NICConfig.CrossRailCIDR,
-			Gateway:     rail.Gateway,
-		})
+		if cfg.NICConfig.CrossRailCIDR != "" {
+			params.Routes = append(params.Routes, Route{
+				Destination: cfg.NICConfig.CrossRailCIDR,
+				Gateway:     rail.Gateway,
+			})
+		}
 
 		// Default route in policy table
 		params.Routes = append(params.Routes, Route{
