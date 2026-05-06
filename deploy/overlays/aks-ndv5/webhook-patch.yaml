@@ -9,4 +9,4 @@ spec:
     spec:
       containers:
       - name: webhook
-        image: ghcr.io/openshift-psap/dra-rail-admission-webhook/webhook:dev-expand-cel-selector-attributes
+        image: ghcr.io/openshift-psap/dra-rail-admission-webhook/webhook:pr-1

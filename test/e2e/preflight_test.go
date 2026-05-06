@@ -43,6 +43,7 @@ func testPreflight(t *testing.T) {
 		t.Log("Preflight passed — sufficient resources available")
 
 		WaitForPodRunningOrSucceeded(t, f, created.Name, 5*time.Minute)
+		CleanupAllPods(t, f, 60*time.Second)
 	})
 
 	// Test 18: Cross-NUMA fallback — request count > maxPairsPerNUMA with annotation
@@ -61,6 +62,7 @@ func testPreflight(t *testing.T) {
 		t.Log("Preflight passed — cross-NUMA annotation allowed 5-pair request (> maxPairsPerNUMA)")
 
 		WaitForPodRunningOrSucceeded(t, f, created.Name, 5*time.Minute)
+		CleanupAllPods(t, f, 60*time.Second)
 	})
 
 	// Tests 17+19: Resource exhaustion — block all nodes, verify denial for both

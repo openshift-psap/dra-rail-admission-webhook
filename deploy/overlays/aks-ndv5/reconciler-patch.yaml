@@ -8,4 +8,4 @@ spec:
     spec:
       containers:
       - name: reconciler
-        image: ghcr.io/openshift-psap/dra-rail-admission-webhook/reconciler:dev-expand-cel-selector-attributes
+        image: ghcr.io/openshift-psap/dra-rail-admission-webhook/reconciler:pr-1

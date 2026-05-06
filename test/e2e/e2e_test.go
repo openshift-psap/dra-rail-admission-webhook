@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -150,7 +151,16 @@ func TestMain(m *testing.M) {
 }
 
 // deployOverlay runs kubectl apply -k on the given overlay path.
+// Resolves relative paths from the repo root (two levels up from test/e2e/).
 func deployOverlay(kubeconfig, overlay string) error {
+	if !filepath.IsAbs(overlay) {
+		// test runs from test/e2e/, resolve relative to repo root
+		repoRoot, err := filepath.Abs(filepath.Join(".", "..", ".."))
+		if err != nil {
+			return fmt.Errorf("cannot resolve repo root: %w", err)
+		}
+		overlay = filepath.Join(repoRoot, overlay)
+	}
 	cmd := exec.Command("kubectl", "--kubeconfig", kubeconfig, "apply", "-k", overlay)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
