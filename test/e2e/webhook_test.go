@@ -154,6 +154,9 @@ func testWebhookMutation(t *testing.T) {
 		if os.Getenv("E2E_SKIP_GPU") == "true" {
 			t.Skip("E2E_SKIP_GPU set")
 		}
+		// Wait for allocator pending entries to expire (2min TTL)
+		t.Log("Waiting 150s for allocator pending entries to expire before full-node test")
+		time.Sleep(150 * time.Second)
 		pod := GPUNICPod("full-8pair", 8)
 		created := CreatePod(t, f, pod)
 

@@ -24,6 +24,10 @@ func testAllocationVerification(t *testing.T) {
 
 	f := NewFramework(t, "alloc")
 
+	// Wait for allocator pending entries from previous suite to expire (2min TTL)
+	t.Log("Waiting 150s for allocator pending entries to expire")
+	time.Sleep(150 * time.Second)
+
 	t.Run("PCIePairing", func(t *testing.T) {
 		pod := GPUNICPod("pcie-pair-2", 2)
 		created := CreatePod(t, f, pod)

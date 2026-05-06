@@ -24,6 +24,10 @@ func testPreflight(t *testing.T) {
 
 	f := NewFramework(t, "preflight")
 
+	// Wait for allocator pending entries from previous suite to expire (2min TTL)
+	t.Log("Waiting 150s for allocator pending entries to expire")
+	time.Sleep(150 * time.Second)
+
 	// Enable preflight in the ConfigMap and restart webhook
 	restore := SaveConfigMap(t, f)
 	t.Cleanup(restore)
