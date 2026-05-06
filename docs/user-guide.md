@@ -122,7 +122,94 @@ When a pod with `dra.llm-d.io/gpu-nic-pair` is created, the webhook:
 5. **Strips** the synthetic resource from container `requests` and `limits`
 6. **Annotates** the pod with `dra.llm-d.io/mutated: "true"`
 
-The resulting `ResourceClaim` requests N GPUs and N NICs with `matchAttribute` constraints on `pcieRoot` (and `numaNode` when NUMA-constrained), ensuring hardware affinity.
+On **Ethernet** clusters, the resulting `ResourceClaim` uses `matchAttribute` constraints on `pcieRoot` and `numaNode` for hardware affinity. On **InfiniBand** clusters, GPU and NIC are pinned by exact PCIe address from the configured `ibRails` mapping.
+
+---
+
+## InfiniBand Support
+
+The webhook auto-detects InfiniBand transport from `dra.net/encapsulation` attributes at startup. On IB clusters, configure `ibRails` instead of `rails` in the ConfigMap:
+
+```yaml
+transportMode: auto          # auto-detects from ResourceSlice attributes
+nicConfig:
+  mtu: 2044                  # IPoIB MTU
+  rdmaRequired: true
+  ibRails:                   # GPU+NIC PCIe address pairs (list index = rail index)
+    - gpu: "0001:00:00.0"    # rail 0, NUMA 0
+      nic: "0101:00:00.0"
+    - gpu: "0002:00:00.0"    # rail 1
+      nic: "0102:00:00.0"
+    # ... one entry per GPU-NIC pair on the node
+```
+
+### How IB mode differs from Ethernet
+
+| Aspect | Ethernet | InfiniBand |
+|--------|----------|------------|
+| Rail selection | IPv4 prefix match (`ipv4.startsWith`) | PCIe address exact match |
+| GPU-NIC pairing | `matchAttribute: pcieRoot` | CEL selector on `pciBusID` + `pciAddress` |
+| Routing config | Policy routes + cross-rail gateway | None (IB fabric handles forwarding) |
+| Availability detection | `dra.net/ipv4` attribute presence | ResourceClaim inspection |
+
+### Finding PCIe address pairs
+
+The `ibRails` mapping comes from your VM's PCIe topology. For Azure ND-series, the topology file is at:
+- Host path: `/opt/microsoft/ndv5-topo.xml`
+- GitHub: [Azure/azhpc-images/topology/ndv5-topo.xml](https://github.com/Azure/azhpc-images/blob/master/topology/ndv5-topo.xml)
+
+Each `<pci>` bridge in the topology contains one GPU (class `0x030200`) and one NIC (class `0x020700`) — these form a pair.
+
+You can also extract pairs from DRA ResourceSlices:
+
+```bash
+# GPU PCIe bus IDs
+kubectl get resourceslice -o json | jq -r '.items[] | select(.spec.driver=="gpu.nvidia.com") | .spec.devices[] | .attributes["resource.kubernetes.io/pciBusID"].string'
+
+# NIC PCI addresses
+kubectl get resourceslice -o json | jq -r '.items[] | select(.spec.driver=="dra.net") | .spec.devices[] | select(.attributes["dra.net/rdma"].bool==true) | .attributes["dra.net/pciAddress"].string'
+```
+
+---
+
+## Kustomize Overlays
+
+The `deploy/base/` directory contains canonical manifests with Ethernet defaults. For cluster-specific configuration (images, transport, rails), use a kustomize overlay:
+
+```
+deploy/overlays/aks-ndv5/
+  kustomization.yaml        # References ../../base
+  webhook-patch.yaml        # Image tag, replicas
+  reconciler-patch.yaml     # Image tag
+  configmap-patch.yaml      # IB transport, ibRails, MTU
+```
+
+Deploy:
+
+```bash
+kubectl apply -k deploy/overlays/aks-ndv5/
+```
+
+Create a new overlay by copying an existing one and updating `configmap-patch.yaml` with your cluster's topology.
+
+---
+
+## E2E Testing
+
+Run e2e tests against a cluster with DRA drivers installed:
+
+```bash
+# Test against an already-deployed webhook
+E2E_KUBECONFIG=~/.kube/config \
+  go test -v -tags e2e -timeout 45m -count 1 ./test/e2e/
+
+# Deploy from overlay before testing
+E2E_KUBECONFIG=~/.kube/config \
+E2E_DEPLOY_OVERLAY=deploy/overlays/aks-ndv5 \
+  go test -v -tags e2e -timeout 45m -count 1 ./test/e2e/
+```
+
+When `E2E_DEPLOY_OVERLAY` is set, `TestMain` runs `kubectl apply -k` on the overlay and waits for rollout before starting tests.
 
 ---
 
