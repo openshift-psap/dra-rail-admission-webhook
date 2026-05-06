@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: dra-gpu-nic-webhook
+  namespace: dra-webhook-system
+  labels:
+    app: dra-gpu-nic-webhook
+spec:
+  selector:
+    app: dra-gpu-nic-webhook
+  ports:
+  - port: 443
+    targetPort: 8443
+    protocol: TCP
+    name: https

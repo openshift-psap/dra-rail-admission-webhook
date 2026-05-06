@@ -1,0 +1,11 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dra-gpu-nic-reconciler
+  namespace: dra-webhook-system
+spec:
+  template:
+    spec:
+      containers:
+      - name: reconciler
+        image: ghcr.io/openshift-psap/dra-rail-admission-webhook/reconciler:dev-expand-cel-selector-attributes

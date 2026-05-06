@@ -1,0 +1,41 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dra-gpu-nic-webhook-config
+  namespace: dra-webhook-system
+data:
+  config.yaml: |
+    maxPairsPerNUMA: 4
+    maxPairsPerNode: 8
+    gpuDeviceClassName: gpu.nvidia.com
+    nicDeviceClassName: dranet
+    transportMode: auto
+    nicConfig:
+      mtu: 2044
+      rdmaRequired: true
+      interfacePrefix: "net"
+      startingTableId: 100
+      ibRails:
+        - gpu: "0001:00:00.0"
+          nic: "0101:00:00.0"
+        - gpu: "0002:00:00.0"
+          nic: "0102:00:00.0"
+        - gpu: "0003:00:00.0"
+          nic: "0103:00:00.0"
+        - gpu: "0008:00:00.0"
+          nic: "0104:00:00.0"
+        - gpu: "0009:00:00.0"
+          nic: "0105:00:00.0"
+        - gpu: "000a:00:00.0"
+          nic: "0106:00:00.0"
+        - gpu: "000b:00:00.0"
+          nic: "0107:00:00.0"
+        - gpu: "000c:00:00.0"
+          nic: "0108:00:00.0"
+    preflightCheck: false
+  reconciler.yaml: |
+    interval: "5m"
+    autoReap: false
+    gracePeriod: "10m"
+    pruneAfter: "168h"
+    statePath: "/data/reconciler-state.json"

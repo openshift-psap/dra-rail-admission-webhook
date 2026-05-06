@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"testing"
 	"time"
 
@@ -41,6 +42,20 @@ func TestMain(m *testing.M) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+
+	// 0. Deploy from kustomize overlay if E2E_DEPLOY_OVERLAY is set
+	if overlay := os.Getenv("E2E_DEPLOY_OVERLAY"); overlay != "" {
+		fmt.Printf("Deploying from overlay: %s\n", overlay)
+		if err := deployOverlay(kubeconfig, overlay); err != nil {
+			fmt.Fprintf(os.Stderr, "FATAL: deploy overlay failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("OK: overlay deployed, waiting for rollout")
+		if err := waitForRollout(kubeconfig, globalWebhookNS); err != nil {
+			fmt.Fprintf(os.Stderr, "FATAL: rollout failed: %v\n", err)
+			os.Exit(1)
+		}
+	}
 
 	// 1. Cluster connectivity
 	_, err = client.Discovery().ServerVersion()
@@ -132,6 +147,29 @@ func TestMain(m *testing.M) {
 	}
 
 	os.Exit(code)
+}
+
+// deployOverlay runs kubectl apply -k on the given overlay path.
+func deployOverlay(kubeconfig, overlay string) error {
+	cmd := exec.Command("kubectl", "--kubeconfig", kubeconfig, "apply", "-k", overlay)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// waitForRollout waits for webhook and reconciler deployments to roll out.
+func waitForRollout(kubeconfig, namespace string) error {
+	for _, dep := range []string{webhookDeployment, reconcilerDeployment} {
+		cmd := exec.Command("kubectl", "--kubeconfig", kubeconfig,
+			"rollout", "status", "deployment/"+dep,
+			"-n", namespace, "--timeout=120s")
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("rollout %s: %w", dep, err)
+		}
+	}
+	return nil
 }
 
 // TestE2E is the single orchestrator that runs all test categories in order.
