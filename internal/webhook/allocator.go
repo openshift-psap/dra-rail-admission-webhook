@@ -505,6 +505,11 @@ func (a *Allocator) scanIBSlots(ctx context.Context) (map[string][]NICSlot, erro
 		nicToRail[rail.NIC] = i
 	}
 
+	// Build set of consumed devices from allocated ResourceClaims.
+	// On IB, DRAnet doesn't strip attributes on allocation, so we must
+	// check claims to know which devices are actually in use.
+	consumed := a.getConsumedIBDevices(ctx)
+
 	nodeSlots := make(map[string][]NICSlot)
 
 	for _, slice := range slices.Items {
@@ -530,6 +535,12 @@ func (a *Allocator) scanIBSlots(ctx context.Context) (map[string][]NICSlot, erro
 				continue
 			}
 
+			// Skip devices consumed by existing claims
+			key := nodeName + ":" + device.Name
+			if consumed[key] {
+				continue
+			}
+
 			if a.Config.NICConfig.RDMARequired {
 				rdmaAttr, ok := device.Attributes[resourcev1.QualifiedName("dra.net/rdma")]
 				if !ok || rdmaAttr.BoolValue == nil || !*rdmaAttr.BoolValue {
@@ -548,6 +559,28 @@ func (a *Allocator) scanIBSlots(ctx context.Context) (map[string][]NICSlot, erro
 	}
 
 	return nodeSlots, nil
+}
+
+// getConsumedIBDevices returns a set of "node:deviceName" keys for NIC devices
+// that are currently allocated by ResourceClaims.
+func (a *Allocator) getConsumedIBDevices(ctx context.Context) map[string]bool {
+	consumed := make(map[string]bool)
+	claims, err := a.KubeClient.ResourceV1().ResourceClaims("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		klog.V(2).ErrorS(err, "Failed to list ResourceClaims for IB availability check")
+		return consumed
+	}
+	for _, claim := range claims.Items {
+		if claim.Status.Allocation == nil {
+			continue
+		}
+		for _, result := range claim.Status.Allocation.Devices.Results {
+			if result.Driver == "dra.net" {
+				consumed[result.Pool+":"+result.Device] = true
+			}
+		}
+	}
+	return consumed
 }
 
 func getPCIAddress(device resourcev1.Device) string {

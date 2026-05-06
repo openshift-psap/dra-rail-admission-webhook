@@ -8,6 +8,7 @@ import (
 
 	resourcev1 "k8s.io/api/resource/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 
 	resourceclient "k8s.io/client-go/kubernetes/typed/resource/v1"
@@ -26,6 +27,8 @@ type NodeAvailability struct {
 // before the pod is admitted. This avoids pods stuck in Pending.
 type PreflightChecker struct {
 	ResourceClient resourceclient.ResourceV1Interface
+	KubeClient     kubernetes.Interface
+	Config         Config
 }
 
 // CheckAvailability verifies that at least one node can satisfy the requested
@@ -84,10 +87,112 @@ func (p *PreflightChecker) CheckAvailability(ctx context.Context, count int, num
 		count, strings.Join(reasons, "; "))
 }
 
-// getClusterAvailability reads ResourceSlices to determine available GPU-NIC pairs
+// getClusterAvailability reads cluster state to determine available GPU-NIC pairs
+// per node and NUMA zone.
+func (p *PreflightChecker) getClusterAvailability(ctx context.Context, cfg Config) ([]NodeAvailability, error) {
+	if cfg.IsInfiniBand() {
+		return p.getIBClusterAvailability(ctx, cfg)
+	}
+	return p.getEthernetClusterAvailability(ctx, cfg)
+}
+
+// getIBClusterAvailability determines availability on IB clusters by counting
+// all configured ibRails per node from ResourceSlices, then subtracting rails
+// consumed by allocated ResourceClaims.
+func (p *PreflightChecker) getIBClusterAvailability(ctx context.Context, cfg Config) ([]NodeAvailability, error) {
+	slices, err := p.ResourceClient.ResourceSlices().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list resource slices: %w", err)
+	}
+
+	nicToRail := make(map[string]int, len(cfg.NICConfig.IBRails))
+	for i, rail := range cfg.NICConfig.IBRails {
+		nicToRail[rail.NIC] = i
+	}
+
+	// Discover all rails per node from ResourceSlices
+	type railInfo struct {
+		railIdx int
+		numa    int
+	}
+	nodeRails := make(map[string][]railInfo)
+
+	for _, slice := range slices.Items {
+		if slice.Spec.Driver != "dra.net" || slice.Spec.NodeName == nil {
+			continue
+		}
+		nodeName := *slice.Spec.NodeName
+
+		for _, device := range slice.Spec.Devices {
+			pciAddr := getPCIAddress(device)
+			railIdx, ok := nicToRail[pciAddr]
+			if !ok {
+				continue
+			}
+			numa := getNUMAZone(device)
+			nodeRails[nodeName] = append(nodeRails[nodeName], railInfo{railIdx: railIdx, numa: numa})
+		}
+	}
+
+	// Count consumed rails per node from allocated ResourceClaims
+	consumedPerNode := make(map[string]int)
+	claims, err := p.KubeClient.ResourceV1().ResourceClaims("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		klog.ErrorS(err, "Preflight: failed to list ResourceClaims, assuming none consumed")
+	} else {
+		for _, claim := range claims.Items {
+			if claim.Status.Allocation == nil {
+				continue
+			}
+			for _, result := range claim.Status.Allocation.Devices.Results {
+				if result.Driver == "dra.net" && result.Pool != "" {
+					consumedPerNode[result.Pool]++
+				}
+			}
+		}
+	}
+
+	var result []NodeAvailability
+	for nodeName, rails := range nodeRails {
+		consumed := consumedPerNode[nodeName]
+		totalRails := len(rails)
+		available := totalRails - consumed
+		if available <= 0 {
+			continue
+		}
+
+		// Distribute remaining availability across NUMA zones proportionally
+		numaTotal := make(map[int]int)
+		for _, r := range rails {
+			numaTotal[r.numa]++
+		}
+		// Approximate: subtract consumed evenly, but cap per NUMA at total
+		nodeAvail := NodeAvailability{
+			NodeName:     nodeName,
+			PairsPerNUMA: make(map[int]int),
+			TotalPairs:   available,
+		}
+		// Simple heuristic: available per NUMA = total per NUMA - (consumed * numaFraction)
+		for numa, total := range numaTotal {
+			if totalRails > 0 {
+				numaConsumed := consumed * total / totalRails
+				avail := total - numaConsumed
+				if avail > 0 {
+					nodeAvail.PairsPerNUMA[numa] = avail
+				}
+			}
+		}
+
+		result = append(result, nodeAvail)
+	}
+
+	return result, nil
+}
+
+// getEthernetClusterAvailability reads ResourceSlices to determine available GPU-NIC pairs
 // per node and NUMA zone. A NIC is considered available if it has the "dra.net/ifName"
 // attribute present (allocated NICs have operational attributes stripped by the driver).
-func (p *PreflightChecker) getClusterAvailability(ctx context.Context, cfg Config) ([]NodeAvailability, error) {
+func (p *PreflightChecker) getEthernetClusterAvailability(ctx context.Context, cfg Config) ([]NodeAvailability, error) {
 	// Get NIC ResourceSlices
 	nicSlices, err := p.ResourceClient.ResourceSlices().List(ctx, metav1.ListOptions{})
 	if err != nil {

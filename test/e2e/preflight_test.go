@@ -73,6 +73,8 @@ func testPreflight(t *testing.T) {
 	// NUMA-constrained and cross-NUMA requests. Shared blocker setup avoids
 	// creating/destroying 28 GPU-NIC pairs twice.
 	t.Run("ResourceExhaustion", func(t *testing.T) {
+		CleanupAllPods(t, f, 60*time.Second)
+
 		// Block all GPU nodes by consuming 7 of 8 pairs each.
 		// Each node has 2 NUMA zones with 4 pairs. With 7 consumed (cross-NUMA),
 		// at most 1 pair remains per node (0 on one NUMA, 1 on the other).
