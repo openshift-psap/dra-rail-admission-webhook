@@ -176,7 +176,7 @@ kubectl get resourceslice -o json | jq -r '.items[] | select(.spec.driver=="dra.
 
 The `deploy/base/` directory contains canonical manifests with Ethernet defaults. For cluster-specific configuration (images, transport, rails), use a kustomize overlay:
 
-```
+```text
 deploy/overlays/aks-ndv5/
   kustomization.yaml        # References ../../base
   webhook-patch.yaml        # Image tag, replicas

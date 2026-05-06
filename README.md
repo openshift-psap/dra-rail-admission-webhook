@@ -121,7 +121,7 @@ make deploy NAMESPACE=dra-webhook-system
 
 Use kustomize overlays for cluster-specific config (images, transport, rails, replicas):
 
-```
+```text
 deploy/
   base/                    # Canonical manifests
   overlays/
@@ -154,7 +154,7 @@ Main branch pushes are tagged with the commit SHA. Tagged releases use semver.
 
 ## Project Layout
 
-```
+```text
 cmd/
   webhook/          Webhook server entrypoint
   reconciler/       Reconciler entrypoint
