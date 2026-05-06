@@ -3,11 +3,62 @@ package webhook
 import (
 	"context"
 	"fmt"
+	"sort"
 
+	resourcev1 "k8s.io/api/resource/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/klog/v2"
 	"gopkg.in/yaml.v3"
 )
+
+// PairingMode controls how GPU-NIC pairing constraints are expressed.
+type PairingMode string
+
+const (
+	PairingModeAuto     PairingMode = "auto"
+	PairingModeExplicit PairingMode = "explicit"
+)
+
+// DeviceSelectorConfig defines how to identify a device type in CEL selectors.
+type DeviceSelectorConfig struct {
+	DeviceClassName string `yaml:"deviceClassName"`
+	// Driver is the ResourceSlice driver name (e.g., "dra.net", "gpu.nvidia.com").
+	// Used to match ResourceSlice.Spec.Driver during availability scanning.
+	// If empty, DeviceClassName is used as fallback (works when they match).
+	Driver          string `yaml:"driver,omitempty"`
+	AttributeDomain string `yaml:"attributeDomain"`
+	AttributeName   string `yaml:"attributeName"`
+}
+
+// DriverName returns the driver name for ResourceSlice matching.
+func (s DeviceSelectorConfig) DriverName() string {
+	if s.Driver != "" {
+		return s.Driver
+	}
+	return s.DeviceClassName
+}
+
+// ExplicitPairMapping defines one set of co-located devices.
+// Devices keys must match the keys in PairingConfig.DeviceSelectors.
+type ExplicitPairMapping struct {
+	Devices map[string]string `yaml:"devices"`
+	Rail    int               `yaml:"rail"`
+	NUMA    int               `yaml:"numa"`
+}
+
+// NodePoolMapping defines the device topology for a group of similar nodes.
+type NodePoolMapping struct {
+	NodePoolLabel string                `yaml:"nodePoolLabel"`
+	Pairs         []ExplicitPairMapping `yaml:"pairs"`
+}
+
+// PairingConfig holds explicit device-to-device pairing configuration.
+type PairingConfig struct {
+	DeviceSelectors  map[string]DeviceSelectorConfig `yaml:"deviceSelectors"`
+	NodePoolLabelKey string                          `yaml:"nodePoolLabelKey"`
+	NodePools        []NodePoolMapping               `yaml:"nodePools"`
+}
 
 // Route represents a network route in the NIC configuration.
 type Route struct {
@@ -32,6 +83,13 @@ type Rule struct {
 	Priority int    `yaml:"priority" json:"priority"`
 }
 
+// IBRailEntry defines a GPU-NIC pair for InfiniBand rail configuration.
+// List index is the rail index.
+type IBRailEntry struct {
+	GPU string `yaml:"gpu"` // GPU PCIe bus ID (e.g., "0001:00:00.0")
+	NIC string `yaml:"nic"` // NIC PCI address (e.g., "0101:00:00.0")
+}
+
 // NICConfig holds network interface configuration.
 type NICConfig struct {
 	MTU             int          `yaml:"mtu"`
@@ -40,8 +98,9 @@ type NICConfig struct {
 	Routes          []Route      `yaml:"routes,omitempty"`
 	SourceSubnet    string       `yaml:"sourceSubnet,omitempty"`
 	StartingTableID int          `yaml:"startingTableId,omitempty"`
-	Rails           []RailConfig `yaml:"rails,omitempty"`
-	CrossRailCIDR   string       `yaml:"crossRailCIDR,omitempty"`
+	Rails           []RailConfig  `yaml:"rails,omitempty"`
+	CrossRailCIDR   string        `yaml:"crossRailCIDR,omitempty"`
+	IBRails         []IBRailEntry `yaml:"ibRails,omitempty"`
 }
 
 // Config holds the webhook configuration loaded from a ConfigMap.
@@ -52,11 +111,22 @@ type Config struct {
 	NICDeviceClassName string    `yaml:"nicDeviceClassName"`
 	NICConfig          NICConfig `yaml:"nicConfig"`
 
-	// PreflightCheck enables an experimental pre-flight availability check.
-	// When enabled, the webhook reads ResourceSlices to verify that at least
-	// one node has enough available GPU-NIC pairs before admitting the pod.
-	// This avoids pods stuck in Pending but adds latency to admission.
 	PreflightCheck bool `yaml:"preflightCheck"`
+
+	// PairingMode selects how GPU-NIC pairing is determined:
+	// "auto" (default) uses MatchAttribute on pcieRoot.
+	// "explicit" uses admin-defined device-to-device mappings with CEL selectors.
+	PairingMode   PairingMode    `yaml:"pairingMode,omitempty"`
+	PairingConfig *PairingConfig `yaml:"pairingConfig,omitempty"`
+
+	// DisableNUMAPacking disables the NUMA-aware packing strategy in the
+	// allocator. When true, the allocator does not prefer specific NUMA zones.
+	DisableNUMAPacking bool `yaml:"disableNUMAPacking,omitempty"`
+
+	// TransportMode selects the network transport: "auto" (default) detects
+	// from ResourceSlice encapsulation attributes at startup, "ethernet" uses
+	// IPv4-based rail selection, "infiniband" uses PCIe address-based pairing.
+	TransportMode string `yaml:"transportMode,omitempty"`
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -75,6 +145,151 @@ func DefaultConfig() Config {
 	}
 }
 
+// IsExplicitMode returns true when explicit device-to-device pairing is configured.
+func (c Config) IsExplicitMode() bool {
+	return c.PairingMode == PairingModeExplicit
+}
+
+// IsInfiniBand returns true when the resolved transport mode is InfiniBand.
+func (c Config) IsInfiniBand() bool {
+	return c.TransportMode == "infiniband"
+}
+
+// ResolveTransportMode detects the network transport from ResourceSlices.
+// Scans dra.net devices for the encapsulation attribute. If any device
+// reports "infiniband", returns "infiniband"; otherwise "ethernet".
+func ResolveTransportMode(ctx context.Context, client kubernetes.Interface) string {
+	slices, err := client.ResourceV1().ResourceSlices().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		klog.ErrorS(err, "Failed to list ResourceSlices for transport detection, defaulting to ethernet")
+		return "ethernet"
+	}
+	for _, s := range slices.Items {
+		if s.Spec.Driver != "dra.net" {
+			continue
+		}
+		for _, d := range s.Spec.Devices {
+			attr, ok := d.Attributes[resourcev1.QualifiedName(EncapsulationAttribute)]
+			if ok && attr.StringValue != nil && *attr.StringValue == "infiniband" {
+				return "infiniband"
+			}
+		}
+	}
+	return "ethernet"
+}
+
+// GetNodePoolMapping finds the NodePoolMapping for a node based on its labels.
+func (c Config) GetNodePoolMapping(nodeLabels map[string]string) (*NodePoolMapping, error) {
+	if c.PairingConfig == nil {
+		return nil, fmt.Errorf("pairingConfig is nil")
+	}
+	labelValue, ok := nodeLabels[c.PairingConfig.NodePoolLabelKey]
+	if !ok {
+		return nil, fmt.Errorf("node missing label %q", c.PairingConfig.NodePoolLabelKey)
+	}
+	for i := range c.PairingConfig.NodePools {
+		if c.PairingConfig.NodePools[i].NodePoolLabel == labelValue {
+			return &c.PairingConfig.NodePools[i], nil
+		}
+	}
+	return nil, fmt.Errorf("no node pool mapping for label %s=%s", c.PairingConfig.NodePoolLabelKey, labelValue)
+}
+
+// DeviceSelectorKeys returns sorted device selector keys for deterministic iteration.
+func (c Config) DeviceSelectorKeys() []string {
+	if c.PairingConfig == nil {
+		return nil
+	}
+	keys := make([]string, 0, len(c.PairingConfig.DeviceSelectors))
+	for k := range c.PairingConfig.DeviceSelectors {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// ValidatePairingConfig validates the explicit pairing configuration.
+func ValidatePairingConfig(cfg Config) error {
+	if cfg.PairingMode != "" && cfg.PairingMode != PairingModeAuto && cfg.PairingMode != PairingModeExplicit {
+		return fmt.Errorf("unknown pairingMode %q, must be %q or %q", cfg.PairingMode, PairingModeAuto, PairingModeExplicit)
+	}
+	if !cfg.IsExplicitMode() {
+		return nil
+	}
+	pc := cfg.PairingConfig
+	if pc == nil {
+		return fmt.Errorf("pairingMode is 'explicit' but pairingConfig is not set")
+	}
+	if len(pc.DeviceSelectors) == 0 {
+		return fmt.Errorf("pairingConfig.deviceSelectors must not be empty")
+	}
+	for role, sel := range pc.DeviceSelectors {
+		if sel.DeviceClassName == "" {
+			return fmt.Errorf("deviceSelector %q: deviceClassName is required", role)
+		}
+		if sel.AttributeDomain == "" || sel.AttributeName == "" {
+			return fmt.Errorf("deviceSelector %q: attributeDomain and attributeName are required", role)
+		}
+	}
+	if pc.NodePoolLabelKey == "" {
+		return fmt.Errorf("pairingConfig.nodePoolLabelKey must not be empty")
+	}
+	if len(pc.NodePools) == 0 {
+		return fmt.Errorf("pairingConfig.nodePools must have at least one entry")
+	}
+	selectorKeys := make([]string, 0, len(pc.DeviceSelectors))
+	for k := range pc.DeviceSelectors {
+		selectorKeys = append(selectorKeys, k)
+	}
+	sort.Strings(selectorKeys)
+
+	for _, pool := range pc.NodePools {
+		if len(pool.Pairs) == 0 {
+			return fmt.Errorf("nodePool %q: must have at least one pair", pool.NodePoolLabel)
+		}
+		if len(pool.Pairs) > cfg.MaxPairsPerNode {
+			return fmt.Errorf("nodePool %q: %d pairs exceeds maxPairsPerNode (%d)",
+				pool.NodePoolLabel, len(pool.Pairs), cfg.MaxPairsPerNode)
+		}
+		for i, pair := range pool.Pairs {
+			pairKeys := make([]string, 0, len(pair.Devices))
+			for k := range pair.Devices {
+				pairKeys = append(pairKeys, k)
+			}
+			sort.Strings(pairKeys)
+			if len(pairKeys) != len(selectorKeys) {
+				return fmt.Errorf("nodePool %q pair %d: device keys %v don't match selector keys %v",
+					pool.NodePoolLabel, i, pairKeys, selectorKeys)
+			}
+			for j, k := range pairKeys {
+				if k != selectorKeys[j] {
+					return fmt.Errorf("nodePool %q pair %d: device keys %v don't match selector keys %v",
+						pool.NodePoolLabel, i, pairKeys, selectorKeys)
+				}
+			}
+			for role, val := range pair.Devices {
+				if val == "" {
+					return fmt.Errorf("nodePool %q pair %d: device %q value must not be empty",
+						pool.NodePoolLabel, i, role)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// ParseConfig parses raw YAML bytes into a validated Config.
+func ParseConfig(data []byte) (Config, error) {
+	cfg := DefaultConfig()
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return Config{}, fmt.Errorf("failed to parse config YAML: %w", err)
+	}
+	if err := ValidatePairingConfig(cfg); err != nil {
+		return Config{}, fmt.Errorf("invalid pairing config: %w", err)
+	}
+	return cfg, nil
+}
+
 // LoadConfigFromConfigMap reads and parses the webhook config from a Kubernetes ConfigMap.
 func LoadConfigFromConfigMap(ctx context.Context, client kubernetes.Interface, namespace, name string) (Config, error) {
 	cm, err := client.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
@@ -87,10 +302,5 @@ func LoadConfigFromConfigMap(ctx context.Context, client kubernetes.Interface, n
 		return Config{}, fmt.Errorf("configmap %s/%s missing 'config.yaml' key", namespace, name)
 	}
 
-	cfg := DefaultConfig()
-	if err := yaml.Unmarshal([]byte(data), &cfg); err != nil {
-		return Config{}, fmt.Errorf("failed to parse config.yaml: %w", err)
-	}
-
-	return cfg, nil
+	return ParseConfig([]byte(data))
 }

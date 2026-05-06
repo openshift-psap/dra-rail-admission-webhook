@@ -25,8 +25,21 @@ const (
 	// NUMANodeAttribute is the DRA device attribute on NICs indicating NUMA zone.
 	NUMANodeAttribute = "dra.net/numaNode"
 
+	// EncapsulationAttribute is the DRA device attribute indicating network transport.
+	// Values: "infiniband" for IB, "ether" for Ethernet.
+	EncapsulationAttribute = "dra.net/encapsulation"
+
+	// NICPCIAddressAttribute is the DRA device attribute for NIC PCI bus address.
+	NICPCIAddressAttribute = "dra.net/pciAddress"
+
+	// GPUPCIBusIDAttribute is the DRA device attribute for GPU PCI bus ID.
+	GPUPCIBusIDAttribute = "resource.kubernetes.io/pciBusID"
+
 	// ResourceClaimName is the name used in pod.spec.resourceClaims[].name
 	ResourceClaimName = "gpu-nic-devices"
+
+	// AnnotationOrphanedAt marks a resource as orphaned with a timestamp.
+	AnnotationOrphanedAt = "dra.llm-d.io/orphaned-at"
 
 	// MutatePath is the HTTP path for the webhook handler.
 	MutatePath = "/mutate"

@@ -8,6 +8,7 @@ import (
 
 	resourcev1 "k8s.io/api/resource/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 
 	resourceclient "k8s.io/client-go/kubernetes/typed/resource/v1"
@@ -26,6 +27,8 @@ type NodeAvailability struct {
 // before the pod is admitted. This avoids pods stuck in Pending.
 type PreflightChecker struct {
 	ResourceClient resourceclient.ResourceV1Interface
+	KubeClient     kubernetes.Interface
+	Config         Config
 }
 
 // CheckAvailability verifies that at least one node can satisfy the requested
@@ -84,10 +87,112 @@ func (p *PreflightChecker) CheckAvailability(ctx context.Context, count int, num
 		count, strings.Join(reasons, "; "))
 }
 
-// getClusterAvailability reads ResourceSlices to determine available GPU-NIC pairs
+// getClusterAvailability reads cluster state to determine available GPU-NIC pairs
+// per node and NUMA zone.
+func (p *PreflightChecker) getClusterAvailability(ctx context.Context, cfg Config) ([]NodeAvailability, error) {
+	if cfg.IsInfiniBand() {
+		return p.getIBClusterAvailability(ctx, cfg)
+	}
+	return p.getEthernetClusterAvailability(ctx, cfg)
+}
+
+// getIBClusterAvailability determines availability on IB clusters by counting
+// all configured ibRails per node from ResourceSlices, then subtracting rails
+// consumed by allocated ResourceClaims.
+func (p *PreflightChecker) getIBClusterAvailability(ctx context.Context, cfg Config) ([]NodeAvailability, error) {
+	slices, err := p.ResourceClient.ResourceSlices().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list resource slices: %w", err)
+	}
+
+	nicToRail := make(map[string]int, len(cfg.NICConfig.IBRails))
+	for i, rail := range cfg.NICConfig.IBRails {
+		nicToRail[rail.NIC] = i
+	}
+
+	// Discover all rails per node from ResourceSlices
+	type railInfo struct {
+		railIdx int
+		numa    int
+	}
+	nodeRails := make(map[string][]railInfo)
+
+	for _, slice := range slices.Items {
+		if slice.Spec.Driver != "dra.net" || slice.Spec.NodeName == nil {
+			continue
+		}
+		nodeName := *slice.Spec.NodeName
+
+		for _, device := range slice.Spec.Devices {
+			pciAddr := getPCIAddress(device)
+			railIdx, ok := nicToRail[pciAddr]
+			if !ok {
+				continue
+			}
+			numa := getNUMAZone(device)
+			nodeRails[nodeName] = append(nodeRails[nodeName], railInfo{railIdx: railIdx, numa: numa})
+		}
+	}
+
+	// Count consumed rails per node from allocated ResourceClaims
+	consumedPerNode := make(map[string]int)
+	claims, err := p.KubeClient.ResourceV1().ResourceClaims("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		klog.ErrorS(err, "Preflight: failed to list ResourceClaims, assuming none consumed")
+	} else {
+		for _, claim := range claims.Items {
+			if claim.Status.Allocation == nil {
+				continue
+			}
+			for _, result := range claim.Status.Allocation.Devices.Results {
+				if result.Driver == "dra.net" && result.Pool != "" {
+					consumedPerNode[result.Pool]++
+				}
+			}
+		}
+	}
+
+	var result []NodeAvailability
+	for nodeName, rails := range nodeRails {
+		consumed := consumedPerNode[nodeName]
+		totalRails := len(rails)
+		available := totalRails - consumed
+		if available <= 0 {
+			continue
+		}
+
+		// Distribute remaining availability across NUMA zones proportionally
+		numaTotal := make(map[int]int)
+		for _, r := range rails {
+			numaTotal[r.numa]++
+		}
+		// Approximate: subtract consumed evenly, but cap per NUMA at total
+		nodeAvail := NodeAvailability{
+			NodeName:     nodeName,
+			PairsPerNUMA: make(map[int]int),
+			TotalPairs:   available,
+		}
+		// Simple heuristic: available per NUMA = total per NUMA - (consumed * numaFraction)
+		for numa, total := range numaTotal {
+			if totalRails > 0 {
+				numaConsumed := consumed * total / totalRails
+				avail := total - numaConsumed
+				if avail > 0 {
+					nodeAvail.PairsPerNUMA[numa] = avail
+				}
+			}
+		}
+
+		result = append(result, nodeAvail)
+	}
+
+	return result, nil
+}
+
+// getEthernetClusterAvailability reads ResourceSlices to determine available GPU-NIC pairs
 // per node and NUMA zone. A NIC is considered available if it has the "dra.net/ifName"
 // attribute present (allocated NICs have operational attributes stripped by the driver).
-func (p *PreflightChecker) getClusterAvailability(ctx context.Context, cfg Config) ([]NodeAvailability, error) {
+func (p *PreflightChecker) getEthernetClusterAvailability(ctx context.Context, cfg Config) ([]NodeAvailability, error) {
 	// Get NIC ResourceSlices
 	nicSlices, err := p.ResourceClient.ResourceSlices().List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -252,26 +357,32 @@ func (p *PreflightChecker) SelectAvailableRails(ctx context.Context, count int, 
 	return railIndices
 }
 
-// findAvailableRails checks ResourceSlices for NICs with ipv4 attributes
-// (indicating they're unallocated) and maps them to configured rails.
+// findAvailableRails checks ResourceSlices for available NICs and maps them to configured rails.
 func (p *PreflightChecker) findAvailableRails(ctx context.Context, count int, numaConstrained bool, cfg Config, claimedRails map[int]bool) ([]int, error) {
 	slices, err := p.ResourceClient.ResourceSlices().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list resource slices: %w", err)
 	}
 
-	// Build prefix → rail index map from config
-	prefixToRail := make(map[string]int, len(cfg.NICConfig.Rails))
-	for i, rail := range cfg.NICConfig.Rails {
-		prefixToRail[rail.IPv4Prefix] = i
-	}
-
-	// Collect available rails per node per NUMA zone
 	type nodeRails struct {
-		perNUMA map[int][]int // numaZone → list of available rail indices
-		all     []int         // all available rail indices (for cross-NUMA)
+		perNUMA map[int][]int
+		all     []int
 	}
 	nodes := make(map[string]*nodeRails)
+
+	// Build rail lookup based on transport mode
+	isIB := cfg.IsInfiniBand()
+	prefixToRail := make(map[string]int)
+	nicToRail := make(map[string]int)
+	if isIB {
+		for i, rail := range cfg.NICConfig.IBRails {
+			nicToRail[rail.NIC] = i
+		}
+	} else {
+		for i, rail := range cfg.NICConfig.Rails {
+			prefixToRail[rail.IPv4Prefix] = i
+		}
+	}
 
 	for _, slice := range slices.Items {
 		if slice.Spec.Driver != "dra.net" {
@@ -286,11 +397,6 @@ func (p *PreflightChecker) findAvailableRails(ctx context.Context, count int, nu
 		}
 
 		for _, device := range slice.Spec.Devices {
-			// Must have ipv4 (absent = allocated) and rdma if required
-			ipv4 := getIPv4(device)
-			if ipv4 == "" {
-				continue
-			}
 			if cfg.NICConfig.RDMARequired {
 				rdmaAttr, ok := device.Attributes[resourcev1.QualifiedName("dra.net/rdma")]
 				if !ok || rdmaAttr.BoolValue == nil || !*rdmaAttr.BoolValue {
@@ -298,16 +404,31 @@ func (p *PreflightChecker) findAvailableRails(ctx context.Context, count int, nu
 				}
 			}
 
-			// Match ipv4 to a configured rail
 			railIdx := -1
-			for prefix, idx := range prefixToRail {
-				if strings.HasPrefix(ipv4, prefix) {
-					railIdx = idx
-					break
+			if isIB {
+				pciAddr := getPCIAddress(device)
+				if pciAddr == "" {
+					continue
 				}
-			}
-			if railIdx < 0 {
-				continue // NIC on a subnet not in our rail config
+				idx, ok := nicToRail[pciAddr]
+				if !ok {
+					continue
+				}
+				railIdx = idx
+			} else {
+				ipv4 := getIPv4(device)
+				if ipv4 == "" {
+					continue
+				}
+				for prefix, idx := range prefixToRail {
+					if strings.HasPrefix(ipv4, prefix) {
+						railIdx = idx
+						break
+					}
+				}
+				if railIdx < 0 {
+					continue
+				}
 			}
 
 			numa := getNUMAZone(device)
@@ -397,6 +518,94 @@ func filterRails(rails []int, exclude map[int]bool) []int {
 		}
 	}
 	return result
+}
+
+// CheckExplicitAvailability verifies that at least one node has enough
+// available mapped device pairs to satisfy the request in explicit mode.
+func (p *PreflightChecker) CheckExplicitAvailability(ctx context.Context, count int, cfg Config) error {
+	if cfg.PairingConfig == nil {
+		return fmt.Errorf("preflight: explicit pairing config not set")
+	}
+
+	slices, err := p.ResourceClient.ResourceSlices().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		klog.ErrorS(err, "Preflight explicit check failed to read cluster state, skipping")
+		return nil
+	}
+
+	// Build per-node per-driver device availability
+	type deviceKey struct {
+		driver string
+		value  string
+	}
+	nodeDevices := make(map[string]map[deviceKey]bool)
+
+	for _, slice := range slices.Items {
+		nodeName := ""
+		if slice.Spec.NodeName != nil {
+			nodeName = *slice.Spec.NodeName
+		}
+		if nodeName == "" {
+			continue
+		}
+
+		if nodeDevices[nodeName] == nil {
+			nodeDevices[nodeName] = make(map[deviceKey]bool)
+		}
+
+		for _, device := range slice.Spec.Devices {
+			for role, sel := range cfg.PairingConfig.DeviceSelectors {
+				if slice.Spec.Driver != sel.DriverName() {
+					continue
+				}
+				qualName := resourcev1.QualifiedName(sel.AttributeDomain + "/" + sel.AttributeName)
+				attr, ok := device.Attributes[qualName]
+				if !ok || attr.StringValue == nil {
+					continue
+				}
+				if role == "nic" {
+					if _, hasIF := device.Attributes[resourcev1.QualifiedName("dra.net/ifName")]; !hasIF {
+						continue
+					}
+					if cfg.NICConfig.RDMARequired {
+						rdmaAttr, ok := device.Attributes[resourcev1.QualifiedName("dra.net/rdma")]
+						if !ok || rdmaAttr.BoolValue == nil || !*rdmaAttr.BoolValue {
+							continue
+						}
+					}
+				}
+				nodeDevices[nodeName][deviceKey{driver: sel.DeviceClassName, value: *attr.StringValue}] = true
+			}
+		}
+	}
+
+	// Check each pool's pairs against node availability
+	for _, pool := range cfg.PairingConfig.NodePools {
+		for nodeName, devices := range nodeDevices {
+			availCount := 0
+			for _, pair := range pool.Pairs {
+				allAvail := true
+				for role, deviceID := range pair.Devices {
+					sel := cfg.PairingConfig.DeviceSelectors[role]
+					if !devices[deviceKey{driver: sel.DeviceClassName, value: deviceID}] {
+						allAvail = false
+						break
+					}
+				}
+				if allAvail {
+					availCount++
+				}
+			}
+			if availCount >= count {
+				klog.V(3).InfoS("Preflight explicit check passed",
+					"node", nodeName, "pool", pool.NodePoolLabel,
+					"available", availCount, "requested", count)
+				return nil
+			}
+		}
+	}
+
+	return fmt.Errorf("preflight: no node has %d available explicit device pairs", count)
 }
 
 func formatNUMAAvailability(pairsPerNUMA map[int]int) string {

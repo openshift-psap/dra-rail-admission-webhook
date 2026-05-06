@@ -133,3 +133,27 @@ func TestValidateRequest_RailsCount(t *testing.T) {
 		t.Errorf("error %q should mention configured rails", err.Error())
 	}
 }
+
+func TestValidateExplicitRequest(t *testing.T) {
+	pool := &NodePoolMapping{
+		NodePoolLabel: "gpu-h100",
+		Pairs: []ExplicitPairMapping{
+			{Devices: map[string]string{"gpu": "a", "nic": "b"}},
+			{Devices: map[string]string{"gpu": "c", "nic": "d"}},
+		},
+	}
+	cfg := Config{MaxPairsPerNode: 8}
+
+	if err := ValidateExplicitRequest(1, pool, cfg); err != nil {
+		t.Errorf("1 pair should be valid: %v", err)
+	}
+	if err := ValidateExplicitRequest(2, pool, cfg); err != nil {
+		t.Errorf("2 pairs should be valid: %v", err)
+	}
+	if err := ValidateExplicitRequest(3, pool, cfg); err == nil {
+		t.Error("3 pairs should exceed pool pair count of 2")
+	}
+	if err := ValidateExplicitRequest(0, pool, cfg); err == nil {
+		t.Error("0 pairs should fail")
+	}
+}

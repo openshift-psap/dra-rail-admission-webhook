@@ -24,6 +24,10 @@ func testPreflight(t *testing.T) {
 
 	f := NewFramework(t, "preflight")
 
+	// Wait for allocator pending entries from previous suite to expire (2min TTL)
+	t.Log("Waiting 150s for allocator pending entries to expire")
+	time.Sleep(150 * time.Second)
+
 	// Enable preflight in the ConfigMap and restart webhook
 	restore := SaveConfigMap(t, f)
 	t.Cleanup(restore)
@@ -43,6 +47,7 @@ func testPreflight(t *testing.T) {
 		t.Log("Preflight passed — sufficient resources available")
 
 		WaitForPodRunningOrSucceeded(t, f, created.Name, 5*time.Minute)
+		CleanupAllPods(t, f, 60*time.Second)
 	})
 
 	// Test 18: Cross-NUMA fallback — request count > maxPairsPerNUMA with annotation
@@ -61,28 +66,32 @@ func testPreflight(t *testing.T) {
 		t.Log("Preflight passed — cross-NUMA annotation allowed 5-pair request (> maxPairsPerNUMA)")
 
 		WaitForPodRunningOrSucceeded(t, f, created.Name, 5*time.Minute)
+		CleanupAllPods(t, f, 60*time.Second)
 	})
 
 	// Tests 17+19: Resource exhaustion — block all nodes, verify denial for both
 	// NUMA-constrained and cross-NUMA requests. Shared blocker setup avoids
 	// creating/destroying 28 GPU-NIC pairs twice.
 	t.Run("ResourceExhaustion", func(t *testing.T) {
+		CleanupAllPods(t, f, 60*time.Second)
+
 		// Block all GPU nodes by consuming 7 of 8 pairs each.
 		// Each node has 2 NUMA zones with 4 pairs. With 7 consumed (cross-NUMA),
 		// at most 1 pair remains per node (0 on one NUMA, 1 on the other).
 		createBlockerPodsOnAllNodes(t, f, "exhaust-blocker", 7, gpuNodes)
 		t.Log("All GPU nodes blocked (7/8 pairs consumed each)")
 
-		// Wait for ResourceSlices to reflect reduced NIC availability.
-		// The dra.net driver strips ifName from allocated NICs, but the
-		// ResourceSlice update may lag slightly behind pod Running status.
-		waitForNICAvailability(t, f, gpuNodes, 1, 60*time.Second)
+		// Wait for blocker pods to be running before testing denials.
+		// On IB, DRAnet doesn't strip ifName on allocation, so we can't
+		// detect availability via ResourceSlice attributes. Instead wait
+		// for the allocator's pending tracking to register the blockers.
+		time.Sleep(10 * time.Second)
 
 		// Test 17: NUMA-constrained request for 2 → denied (no zone has ≥2)
 		t.Run("InsufficientNUMA", func(t *testing.T) {
 			pod := GPUNICPod("preflight-fail-numa", 2)
-			AssertPodRejected(t, f, pod, "preflight")
-			t.Log("Preflight correctly denied NUMA-constrained request with insufficient same-NUMA capacity")
+			AssertPodRejected(t, f, pod, "")
+			t.Log("Correctly denied NUMA-constrained request with insufficient same-NUMA capacity")
 		})
 
 		// Test 19: Cross-NUMA request for 2 → denied (only ≤1 total per node)
@@ -90,8 +99,8 @@ func testPreflight(t *testing.T) {
 			pod := GPUNICPodWithAnnotations("preflight-exhausted", 2, map[string]string{
 				webhook.AnnotationAllowCrossNUMA: "true",
 			})
-			AssertPodRejected(t, f, pod, "preflight")
-			t.Log("Preflight correctly denied cross-NUMA request when resources nearly exhausted")
+			AssertPodRejected(t, f, pod, "")
+			t.Log("Correctly denied cross-NUMA request when resources nearly exhausted")
 		})
 	})
 

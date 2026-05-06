@@ -30,6 +30,13 @@ func GPUNICPod(name string, count int) *corev1.Pod {
 		},
 		Spec: corev1.PodSpec{
 			RestartPolicy: corev1.RestartPolicyNever,
+			Tolerations: []corev1.Toleration{
+				{
+					Key:      "nvidia.com/gpu",
+					Operator: corev1.TolerationOpExists,
+					Effect:   corev1.TaintEffectNoSchedule,
+				},
+			},
 			Containers: []corev1.Container{
 				{
 					Name:  "test",
@@ -450,6 +457,35 @@ func AssertNUMALocality(t *testing.T, f *Framework, claimName string) {
 		t.Fatal("no NIC allocations found in claim")
 	}
 	t.Logf("Verified %d NICs allocated in claim %s (NUMA locality enforced by matchAttribute constraint)", nicCount, claimName)
+}
+
+// ---------- Cleanup ----------
+
+// CleanupAllPods deletes all pods in the framework namespace and waits for
+// all ResourceClaims to be released. Call between heavy subtests to free devices.
+func CleanupAllPods(t *testing.T, f *Framework, timeout time.Duration) {
+	t.Helper()
+	ctx := context.Background()
+
+	pods, err := f.KubeClient.CoreV1().Pods(f.Namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		t.Logf("cleanup: failed to list pods: %v", err)
+		return
+	}
+	for _, pod := range pods.Items {
+		_ = f.KubeClient.CoreV1().Pods(f.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{
+			GracePeriodSeconds: int64Ptr(0),
+		})
+	}
+
+	WaitForCondition(t, timeout, "all claims released in "+f.Namespace, func() bool {
+		claims, err := f.ResourceClient.ResourceClaims(f.Namespace).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return false
+		}
+		return len(claims.Items) == 0
+	})
+	t.Log("cleanup: all pods deleted, claims released")
 }
 
 // ---------- Utility ----------

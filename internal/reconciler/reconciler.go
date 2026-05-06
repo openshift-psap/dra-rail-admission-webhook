@@ -10,6 +10,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
+
+	"github.com/llm-d/dra-admission-webhook/internal/webhook"
 )
 
 const (
@@ -18,7 +20,7 @@ const (
 	ManagedByValue = "dra-gpu-nic-webhook"
 
 	// OrphanedAnnotation is set on resources detected as orphaned.
-	OrphanedAnnotation = "dra.llm-d.io/orphaned-at"
+	OrphanedAnnotation = webhook.AnnotationOrphanedAt
 )
 
 // Reconciler detects and optionally reaps orphaned DRA resources.
