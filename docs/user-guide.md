@@ -213,6 +213,53 @@ When `E2E_DEPLOY_OVERLAY` is set, `TestMain` runs `kubectl apply -k` on the over
 
 ---
 
+## Advanced Configuration
+
+### Disable NUMA Packing
+
+By default, the allocator packs small requests onto the most-utilized NUMA zone, keeping the other zone's full capacity available for larger requests. To disable this heuristic:
+
+```yaml
+disableNUMAPacking: true
+```
+
+When disabled, the allocator does not prefer specific NUMA zones for small requests.
+
+### Explicit Pairing Mode (experimental)
+
+For clusters where automatic rail discovery doesn't work, explicit pairing mode lets admins define exact device-to-device mappings per node pool:
+
+```yaml
+pairingMode: explicit
+pairingConfig:
+  nodePoolLabelKey: "node.kubernetes.io/instance-type"
+  deviceSelectors:
+    gpu:
+      deviceClassName: gpu.nvidia.com
+      driver: gpu.nvidia.com
+      attributeDomain: "resource.kubernetes.io"
+      attributeName: "pciBusID"
+    nic:
+      deviceClassName: dranet
+      driver: dra.net
+      attributeDomain: "dra.net"
+      attributeName: "ifName"
+  nodePools:
+    - nodePoolLabel: "gpu-h100"
+      pairs:
+        - devices: { gpu: "GPU-UUID-1", nic: "net0" }
+          rail: 0
+          numa: 0
+        - devices: { gpu: "GPU-UUID-2", nic: "net1" }
+          rail: 1
+          numa: 0
+        # ... one entry per GPU-NIC pair
+```
+
+> **Note:** Explicit pairing mode has known issues being tracked in [#9](https://github.com/openshift-psap/dra-rail-admission-webhook/issues/9), [#10](https://github.com/openshift-psap/dra-rail-admission-webhook/issues/10), [#11](https://github.com/openshift-psap/dra-rail-admission-webhook/issues/11), and [#12](https://github.com/openshift-psap/dra-rail-admission-webhook/issues/12). Use auto mode (with `rails` or `ibRails`) for production deployments.
+
+---
+
 ## Quick Reference
 
 | Item | Value |
