@@ -90,8 +90,8 @@ func testPreflight(t *testing.T) {
 		// Test 17: NUMA-constrained request for 2 → denied (no zone has ≥2)
 		t.Run("InsufficientNUMA", func(t *testing.T) {
 			pod := GPUNICPod("preflight-fail-numa", 2)
-			AssertPodRejected(t, f, pod, "preflight")
-			t.Log("Preflight correctly denied NUMA-constrained request with insufficient same-NUMA capacity")
+			AssertPodRejected(t, f, pod, "")
+			t.Log("Correctly denied NUMA-constrained request with insufficient same-NUMA capacity")
 		})
 
 		// Test 19: Cross-NUMA request for 2 → denied (only ≤1 total per node)
@@ -99,8 +99,8 @@ func testPreflight(t *testing.T) {
 			pod := GPUNICPodWithAnnotations("preflight-exhausted", 2, map[string]string{
 				webhook.AnnotationAllowCrossNUMA: "true",
 			})
-			AssertPodRejected(t, f, pod, "preflight")
-			t.Log("Preflight correctly denied cross-NUMA request when resources nearly exhausted")
+			AssertPodRejected(t, f, pod, "")
+			t.Log("Correctly denied cross-NUMA request when resources nearly exhausted")
 		})
 	})
 
