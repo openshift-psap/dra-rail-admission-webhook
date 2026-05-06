@@ -20,7 +20,7 @@ spec:
       serviceAccountName: dra-gpu-nic-webhook
       containers:
       - name: reconciler
-        image: quay.io/rh-ee-thibrahi/dra-net-webhook:reconciler
+        image: ghcr.io/openshift-psap/dra-rail-admission-webhook/reconciler:main
         imagePullPolicy: Always
         args:
         - --config-namespace=dra-webhook-system

@@ -555,7 +555,7 @@ func (p *PreflightChecker) CheckExplicitAvailability(ctx context.Context, count 
 
 		for _, device := range slice.Spec.Devices {
 			for role, sel := range cfg.PairingConfig.DeviceSelectors {
-				if slice.Spec.Driver != sel.DeviceClassName {
+				if slice.Spec.Driver != sel.DriverName() {
 					continue
 				}
 				qualName := resourcev1.QualifiedName(sel.AttributeDomain + "/" + sel.AttributeName)

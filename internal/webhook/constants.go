@@ -38,6 +38,9 @@ const (
 	// ResourceClaimName is the name used in pod.spec.resourceClaims[].name
 	ResourceClaimName = "gpu-nic-devices"
 
+	// AnnotationOrphanedAt marks a resource as orphaned with a timestamp.
+	AnnotationOrphanedAt = "dra.llm-d.io/orphaned-at"
+
 	// MutatePath is the HTTP path for the webhook handler.
 	MutatePath = "/mutate"
 )

@@ -8,6 +8,7 @@ import (
 	resourcev1 "k8s.io/api/resource/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/klog/v2"
 	"gopkg.in/yaml.v3"
 )
 
@@ -22,8 +23,20 @@ const (
 // DeviceSelectorConfig defines how to identify a device type in CEL selectors.
 type DeviceSelectorConfig struct {
 	DeviceClassName string `yaml:"deviceClassName"`
+	// Driver is the ResourceSlice driver name (e.g., "dra.net", "gpu.nvidia.com").
+	// Used to match ResourceSlice.Spec.Driver during availability scanning.
+	// If empty, DeviceClassName is used as fallback (works when they match).
+	Driver          string `yaml:"driver,omitempty"`
 	AttributeDomain string `yaml:"attributeDomain"`
 	AttributeName   string `yaml:"attributeName"`
+}
+
+// DriverName returns the driver name for ResourceSlice matching.
+func (s DeviceSelectorConfig) DriverName() string {
+	if s.Driver != "" {
+		return s.Driver
+	}
+	return s.DeviceClassName
 }
 
 // ExplicitPairMapping defines one set of co-located devices.
@@ -148,6 +161,7 @@ func (c Config) IsInfiniBand() bool {
 func ResolveTransportMode(ctx context.Context, client kubernetes.Interface) string {
 	slices, err := client.ResourceV1().ResourceSlices().List(ctx, metav1.ListOptions{})
 	if err != nil {
+		klog.ErrorS(err, "Failed to list ResourceSlices for transport detection, defaulting to ethernet")
 		return "ethernet"
 	}
 	for _, s := range slices.Items {

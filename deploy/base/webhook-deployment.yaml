@@ -25,7 +25,7 @@ spec:
             app: dra-gpu-nic-webhook
       containers:
       - name: webhook
-        image: quay.io/rh-ee-thibrahi/dra-net-webhook:webhook
+        image: ghcr.io/openshift-psap/dra-rail-admission-webhook/webhook:main
         imagePullPolicy: Always
         args:
         - --port=8443
