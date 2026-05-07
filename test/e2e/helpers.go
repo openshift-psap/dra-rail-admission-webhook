@@ -516,6 +516,10 @@ func MixedResourcePod(name string, pairCount, gpuCount int) *corev1.Pod {
 							corev1.ResourceName(webhook.ResourceGPUNICPair): resource.MustParse(fmt.Sprintf("%d", pairCount)),
 							corev1.ResourceName(webhook.ResourceNvidiaGPU):  resource.MustParse(fmt.Sprintf("%d", gpuCount)),
 						},
+						Limits: corev1.ResourceList{
+							corev1.ResourceName(webhook.ResourceGPUNICPair): resource.MustParse(fmt.Sprintf("%d", pairCount)),
+							corev1.ResourceName(webhook.ResourceNvidiaGPU):  resource.MustParse(fmt.Sprintf("%d", gpuCount)),
+						},
 					},
 				},
 			},
@@ -541,13 +545,16 @@ func AssertInterceptedResourceStripped(t *testing.T, pod *corev1.Pod, resourceNa
 }
 
 // EnableInterception patches the webhook ConfigMap to enable extended resource
-// interception and restarts the webhook deployment.
+// interception and restarts the webhook deployment. Waits for endpoint
+// propagation after restart.
 func EnableInterception(t *testing.T, f *Framework, resources []map[string]interface{}) {
 	t.Helper()
 	PatchWebhookConfig(t, f, map[string]interface{}{
 		"interceptExtendedResources": resources,
 	})
 	RestartAndWait(t, f, f.WebhookNS, webhookDeployment, 120*time.Second)
+	// Wait for Service endpoint propagation so the webhook is actually serving
+	time.Sleep(5 * time.Second)
 	t.Log("Webhook restarted with interception enabled")
 }
 
@@ -558,6 +565,7 @@ func DisableInterception(t *testing.T, f *Framework) {
 		"interceptExtendedResources": []interface{}{},
 	})
 	RestartAndWait(t, f, f.WebhookNS, webhookDeployment, 120*time.Second)
+	time.Sleep(5 * time.Second)
 	t.Log("Webhook restarted with interception disabled")
 }
 
