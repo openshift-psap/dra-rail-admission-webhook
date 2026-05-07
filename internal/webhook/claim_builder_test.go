@@ -284,14 +284,14 @@ func TestBuildClaimTemplateSpec_NonSequentialRails(t *testing.T) {
 
 	// NIC 0 should be pinned to rail 3 (10.3.0.0/16)
 	nic0 := spec.Devices.Requests[1].Exactly
-	expected0 := `device.attributes["dra.net"].rdma == true && device.attributes["dra.net"].ipv4.startsWith("10.3.")`
+	expected0 := `device.attributes["dra.net"].rdma == true && has(device.attributes["dra.net"].ipv4) && device.attributes["dra.net"].ipv4.startsWith("10.3.")`
 	if nic0.Selectors[0].CEL.Expression != expected0 {
 		t.Errorf("nic-0 selector = %q, want %q", nic0.Selectors[0].CEL.Expression, expected0)
 	}
 
 	// NIC 1 should be pinned to rail 5 (10.5.0.0/16)
 	nic1 := spec.Devices.Requests[3].Exactly
-	expected1 := `device.attributes["dra.net"].rdma == true && device.attributes["dra.net"].ipv4.startsWith("10.5.")`
+	expected1 := `device.attributes["dra.net"].rdma == true && has(device.attributes["dra.net"].ipv4) && device.attributes["dra.net"].ipv4.startsWith("10.5.")`
 	if nic1.Selectors[0].CEL.Expression != expected1 {
 		t.Errorf("nic-1 selector = %q, want %q", nic1.Selectors[0].CEL.Expression, expected1)
 	}
@@ -612,7 +612,7 @@ func TestBuildExplicitPairClaimSpec_IBMCloudH100_SinglePair(t *testing.T) {
 	if nic.Exactly.Selectors[0].CEL.Expression != expectedNICPin {
 		t.Errorf("NIC pin CEL = %q\nwant         %q", nic.Exactly.Selectors[0].CEL.Expression, expectedNICPin)
 	}
-	expectedNICRail := `device.attributes["dra.net"].rdma == true && device.attributes["dra.net"].ipv4.startsWith("10.0.")`
+	expectedNICRail := `device.attributes["dra.net"].rdma == true && has(device.attributes["dra.net"].ipv4) && device.attributes["dra.net"].ipv4.startsWith("10.0.")`
 	if nic.Exactly.Selectors[1].CEL.Expression != expectedNICRail {
 		t.Errorf("NIC rail CEL = %q\nwant          %q", nic.Exactly.Selectors[1].CEL.Expression, expectedNICRail)
 	}
@@ -665,7 +665,7 @@ func TestBuildExplicitPairClaimSpec_IBMCloudH100_NUMA1Pair(t *testing.T) {
 	}
 
 	// Rail 7 routing
-	expectedNICRail := `device.attributes["dra.net"].rdma == true && device.attributes["dra.net"].ipv4.startsWith("10.7.")`
+	expectedNICRail := `device.attributes["dra.net"].rdma == true && has(device.attributes["dra.net"].ipv4) && device.attributes["dra.net"].ipv4.startsWith("10.7.")`
 	if spec.Devices.Requests[1].Exactly.Selectors[1].CEL.Expression != expectedNICRail {
 		t.Errorf("NIC rail CEL = %q\nwant          %q",
 			spec.Devices.Requests[1].Exactly.Selectors[1].CEL.Expression, expectedNICRail)
@@ -771,7 +771,7 @@ func TestBuildClaimTemplateSpec_RailCELSelectors(t *testing.T) {
 	if len(nic0.Selectors) != 1 {
 		t.Fatalf("nic-0: expected 1 selector, got %d", len(nic0.Selectors))
 	}
-	expected0 := `device.attributes["dra.net"].rdma == true && device.attributes["dra.net"].ipv4.startsWith("10.0.")`
+	expected0 := `device.attributes["dra.net"].rdma == true && has(device.attributes["dra.net"].ipv4) && device.attributes["dra.net"].ipv4.startsWith("10.0.")`
 	if nic0.Selectors[0].CEL.Expression != expected0 {
 		t.Errorf("nic-0 selector = %q, want %q", nic0.Selectors[0].CEL.Expression, expected0)
 	}
@@ -780,7 +780,7 @@ func TestBuildClaimTemplateSpec_RailCELSelectors(t *testing.T) {
 	if len(nic1.Selectors) != 1 {
 		t.Fatalf("nic-1: expected 1 selector, got %d", len(nic1.Selectors))
 	}
-	expected1 := `device.attributes["dra.net"].rdma == true && device.attributes["dra.net"].ipv4.startsWith("10.1.")`
+	expected1 := `device.attributes["dra.net"].rdma == true && has(device.attributes["dra.net"].ipv4) && device.attributes["dra.net"].ipv4.startsWith("10.1.")`
 	if nic1.Selectors[0].CEL.Expression != expected1 {
 		t.Errorf("nic-1 selector = %q, want %q", nic1.Selectors[0].CEL.Expression, expected1)
 	}
@@ -799,7 +799,7 @@ func TestBuildClaimTemplateSpec_RailNoRDMA(t *testing.T) {
 	if len(nic.Selectors) != 1 {
 		t.Fatalf("expected 1 selector (ipv4 only), got %d", len(nic.Selectors))
 	}
-	expected := `device.attributes["dra.net"].ipv4.startsWith("10.0.")`
+	expected := `has(device.attributes["dra.net"].ipv4) && device.attributes["dra.net"].ipv4.startsWith("10.0.")`
 	if nic.Selectors[0].CEL.Expression != expected {
 		t.Errorf("selector = %q, want %q", nic.Selectors[0].CEL.Expression, expected)
 	}

@@ -42,7 +42,7 @@ func buildNICSelectors(railIndex int, cfg Config) []resourcev1.DeviceSelector {
 			selectors = append(selectors, resourcev1.DeviceSelector{
 				CEL: &resourcev1.CELDeviceSelector{
 					Expression: fmt.Sprintf(
-						`device.attributes["dra.net"].rdma == true && device.attributes["dra.net"].ipv4.startsWith(%q)`,
+						`device.attributes["dra.net"].rdma == true && has(device.attributes["dra.net"].ipv4) && device.attributes["dra.net"].ipv4.startsWith(%q)`,
 						rail.IPv4Prefix,
 					),
 				},
@@ -51,7 +51,7 @@ func buildNICSelectors(railIndex int, cfg Config) []resourcev1.DeviceSelector {
 			selectors = append(selectors, resourcev1.DeviceSelector{
 				CEL: &resourcev1.CELDeviceSelector{
 					Expression: fmt.Sprintf(
-						`device.attributes["dra.net"].ipv4.startsWith(%q)`,
+						`has(device.attributes["dra.net"].ipv4) && device.attributes["dra.net"].ipv4.startsWith(%q)`,
 						rail.IPv4Prefix,
 					),
 				},
