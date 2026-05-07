@@ -601,6 +601,547 @@ func TestEscapeJSONPointer(t *testing.T) {
 	}
 }
 
+// fakeGPUResourceSlice creates a ResourceSlice with GPU devices on a node.
+func fakeGPUResourceSlice(name, nodeName string, gpuCount int) *resourcev1.ResourceSlice {
+	devices := make([]resourcev1.Device, gpuCount)
+	for i := 0; i < gpuCount; i++ {
+		devices[i] = resourcev1.Device{Name: "gpu-" + intToStr(i)}
+	}
+	return &resourcev1.ResourceSlice{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: resourcev1.ResourceSliceSpec{
+			Driver:   "gpu.nvidia.com",
+			NodeName: &nodeName,
+			Pool: resourcev1.ResourcePool{
+				Name: nodeName,
+			},
+			Devices: devices,
+		},
+	}
+}
+
+func TestAllocateExtendedResource_Basic(t *testing.T) {
+	gpuSlice := fakeGPUResourceSlice("node-1-gpus", "node-1", 8)
+	node := fakeNode("node-1", map[string]string{"kubernetes.io/hostname": "node-1"})
+	client := fake.NewSimpleClientset(gpuSlice, node)
+
+	cfg := testConfigWithRails()
+	allocator := NewAllocator(client.ResourceV1(), client, cfg)
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-pod"},
+		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "c"}}},
+	}
+
+	nodeName, err := allocator.AllocateExtendedResource(context.Background(), pod, "default", 2, "gpu.nvidia.com", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if nodeName != "node-1" {
+		t.Errorf("nodeName = %q, want node-1", nodeName)
+	}
+}
+
+func TestAllocateExtendedResource_Constrained(t *testing.T) {
+	gpuSlice := fakeGPUResourceSlice("node-1-gpus", "node-1", 4)
+	node := fakeNode("node-1", map[string]string{"kubernetes.io/hostname": "node-1"})
+	client := fake.NewSimpleClientset(gpuSlice, node)
+
+	cfg := testConfigWithRails()
+	allocator := NewAllocator(client.ResourceV1(), client, cfg)
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-pod"},
+		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "c"}}},
+	}
+
+	nodeName, err := allocator.AllocateExtendedResource(context.Background(), pod, "default", 2, "gpu.nvidia.com", "node-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if nodeName != "node-1" {
+		t.Errorf("nodeName = %q, want node-1", nodeName)
+	}
+}
+
+func TestAllocateExtendedResource_ConstrainedInsufficientGPUs(t *testing.T) {
+	gpuSlice := fakeGPUResourceSlice("node-1-gpus", "node-1", 2)
+	node := fakeNode("node-1", map[string]string{"kubernetes.io/hostname": "node-1"})
+	client := fake.NewSimpleClientset(gpuSlice, node)
+
+	cfg := testConfigWithRails()
+	allocator := NewAllocator(client.ResourceV1(), client, cfg)
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-pod"},
+		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "c"}}},
+	}
+
+	_, err := allocator.AllocateExtendedResource(context.Background(), pod, "default", 4, "gpu.nvidia.com", "node-1")
+	if err == nil {
+		t.Error("expected error for insufficient GPUs on constrained node")
+	}
+}
+
+func TestAllocateExtendedResource_PendingDeconfliction(t *testing.T) {
+	gpuSlice := fakeGPUResourceSlice("node-1-gpus", "node-1", 4)
+	node := fakeNode("node-1", map[string]string{"kubernetes.io/hostname": "node-1"})
+	client := fake.NewSimpleClientset(gpuSlice, node)
+
+	cfg := testConfigWithRails()
+	allocator := NewAllocator(client.ResourceV1(), client, cfg)
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-pod"},
+		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "c"}}},
+	}
+
+	// First allocation: 3 GPUs
+	_, err := allocator.AllocateExtendedResource(context.Background(), pod, "default", 3, "gpu.nvidia.com", "")
+	if err != nil {
+		t.Fatalf("first allocation: %v", err)
+	}
+
+	// Second allocation: 2 more GPUs should fail (only 1 left)
+	_, err = allocator.AllocateExtendedResource(context.Background(), pod, "default", 2, "gpu.nvidia.com", "")
+	if err == nil {
+		t.Error("expected error: only 1 GPU should remain after pending reservation")
+	}
+
+	// Third allocation: 1 GPU should succeed
+	_, err = allocator.AllocateExtendedResource(context.Background(), pod, "default", 1, "gpu.nvidia.com", "")
+	if err != nil {
+		t.Fatalf("third allocation (1 remaining): %v", err)
+	}
+}
+
+func TestAllocateExtendedResource_PacksToMostUtilizedNode(t *testing.T) {
+	gpuSlice1 := fakeGPUResourceSlice("node-1-gpus", "node-1", 8) // 8 free
+	gpuSlice2 := fakeGPUResourceSlice("node-2-gpus", "node-2", 4) // 4 free
+	node1 := fakeNode("node-1", map[string]string{"kubernetes.io/hostname": "node-1"})
+	node2 := fakeNode("node-2", map[string]string{"kubernetes.io/hostname": "node-2"})
+	client := fake.NewSimpleClientset(gpuSlice1, gpuSlice2, node1, node2)
+
+	cfg := testConfigWithRails()
+	allocator := NewAllocator(client.ResourceV1(), client, cfg)
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-pod"},
+		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "c"}}},
+	}
+
+	// Should pack to node-2 (fewest free = most utilized)
+	nodeName, err := allocator.AllocateExtendedResource(context.Background(), pod, "default", 2, "gpu.nvidia.com", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if nodeName != "node-2" {
+		t.Errorf("should pack to node-2 (most utilized), got %q", nodeName)
+	}
+}
+
+// newTestMutatorWithGPUs creates a Mutator with both NIC and GPU ResourceSlices.
+func newTestMutatorWithGPUs(cfg Config, gpuCount int) *Mutator {
+	nicDevices := make([]resourcev1.Device, 8)
+	for i := 0; i < 8; i++ {
+		numaZone := 0
+		if i >= 4 {
+			numaZone = 1
+		}
+		ipv4 := "10." + intToStr(i) + ".100.1"
+		nicDevices[i] = fakeNICDevice("nic-"+intToStr(i), ipv4, numaZone)
+	}
+	nicSlice := fakeResourceSlice("node-1-nics", "node-1", nicDevices)
+	gpuSlice := fakeGPUResourceSlice("node-1-gpus", "node-1", gpuCount)
+	node := fakeNode("node-1", map[string]string{
+		"kubernetes.io/hostname": "node-1",
+	})
+
+	client := fake.NewSimpleClientset(nicSlice, gpuSlice, node)
+	allocator := NewAllocator(client.ResourceV1(), client, cfg)
+
+	return &Mutator{
+		KubeClient:     client,
+		ResourceClient: client.ResourceV1(),
+		Config:         cfg,
+		Allocator:      allocator,
+	}
+}
+
+func podWithNvidiaGPU(count int) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-pod",
+			Namespace: "default",
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:  "workload",
+					Image: "nvidia/cuda:12.3.0-base-ubuntu22.04",
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceName(ResourceNvidiaGPU): resource.MustParse(intToStr(count)),
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func TestMutate_InterceptedResource_Basic(t *testing.T) {
+	cfg := testConfigWithRails()
+	cfg.InterceptExtendedResources = []ExtendedResourceInterception{
+		{ResourceName: ResourceNvidiaGPU, DeviceClassName: "gpu.nvidia.com"},
+	}
+	m := newTestMutatorWithGPUs(cfg, 8)
+
+	pod := podWithNvidiaGPU(2)
+	patch, err := m.Mutate(context.Background(), pod, "default")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if patch == nil {
+		t.Fatal("expected patch, got nil")
+	}
+
+	var ops []jsonPatchOp
+	if err := json.Unmarshal(patch, &ops); err != nil {
+		t.Fatalf("failed to unmarshal patch: %v", err)
+	}
+
+	// Should have: remove resource, add 2 pod claims, add 2 container claim refs,
+	// add affinity, add annotation
+	hasRemove := false
+	podClaimCount := 0
+	hasAffinity := false
+	hasAnnotation := false
+	for _, op := range ops {
+		if op.Op == "remove" && contains(op.Path, "nvidia.com~1gpu") {
+			hasRemove = true
+		}
+		if op.Path == "/spec/resourceClaims" || op.Path == "/spec/resourceClaims/-" {
+			podClaimCount++
+		}
+		if contains(op.Path, "affinity") {
+			hasAffinity = true
+		}
+		if contains(op.Path, AnnotationMutated) || (op.Path == "/metadata/annotations") {
+			hasAnnotation = true
+		}
+	}
+
+	if !hasRemove {
+		t.Error("missing remove op for nvidia.com/gpu")
+	}
+	if podClaimCount == 0 {
+		t.Error("missing pod claim additions")
+	}
+	if !hasAffinity {
+		t.Error("missing node affinity patch")
+	}
+	if !hasAnnotation {
+		t.Error("missing mutated annotation")
+	}
+}
+
+func TestMutate_InterceptedResource_Disabled(t *testing.T) {
+	cfg := testConfigWithRails()
+	// No InterceptExtendedResources configured
+	m := newTestMutatorWithGPUs(cfg, 8)
+
+	pod := podWithNvidiaGPU(2)
+	patch, err := m.Mutate(context.Background(), pod, "default")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if patch != nil {
+		t.Error("expected nil patch when interception disabled")
+	}
+}
+
+func TestMutate_InterceptedResource_AlreadyMutated(t *testing.T) {
+	cfg := testConfigWithRails()
+	cfg.InterceptExtendedResources = []ExtendedResourceInterception{
+		{ResourceName: ResourceNvidiaGPU, DeviceClassName: "gpu.nvidia.com"},
+	}
+	m := newTestMutatorWithGPUs(cfg, 8)
+
+	pod := podWithNvidiaGPU(2)
+	pod.Annotations = map[string]string{AnnotationMutated: "true"}
+
+	patch, err := m.Mutate(context.Background(), pod, "default")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if patch != nil {
+		t.Error("expected nil patch for already-mutated pod")
+	}
+}
+
+func TestMutate_BothResourceTypes_Denied(t *testing.T) {
+	cfg := testConfigWithRails()
+	cfg.InterceptExtendedResources = []ExtendedResourceInterception{
+		{ResourceName: ResourceNvidiaGPU, DeviceClassName: "gpu.nvidia.com"},
+	}
+	m := newTestMutatorWithGPUs(cfg, 8)
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "both-resources", Namespace: "default"},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:  "workload",
+					Image: "nvidia/cuda:12.3.0-base-ubuntu22.04",
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceName(ResourceGPUNICPair): resource.MustParse("2"),
+							corev1.ResourceName(ResourceNvidiaGPU):  resource.MustParse("1"),
+						},
+					},
+				},
+			},
+		},
+	}
+
+	_, err := m.Mutate(context.Background(), pod, "default")
+	if err == nil {
+		t.Fatal("expected denial for pod with both gpu-nic-pair and nvidia.com/gpu")
+	}
+	if !contains(err.Error(), "mutually exclusive") {
+		t.Errorf("error should mention mutual exclusivity, got: %v", err)
+	}
+}
+
+func TestMutate_InterceptedResource_PerContainerCounts(t *testing.T) {
+	cfg := testConfigWithRails()
+	cfg.InterceptExtendedResources = []ExtendedResourceInterception{
+		{ResourceName: ResourceNvidiaGPU, DeviceClassName: "gpu.nvidia.com"},
+	}
+	m := newTestMutatorWithGPUs(cfg, 8)
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "multi-container", Namespace: "default"},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:  "train",
+					Image: "trainer",
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceName(ResourceNvidiaGPU): resource.MustParse("3"),
+						},
+					},
+				},
+				{
+					Name:  "monitor",
+					Image: "monitor",
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceName(ResourceNvidiaGPU): resource.MustParse("1"),
+						},
+					},
+				},
+			},
+		},
+	}
+
+	patch, err := m.Mutate(context.Background(), pod, "default")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if patch == nil {
+		t.Fatal("expected patch")
+	}
+
+	var ops []jsonPatchOp
+	if err := json.Unmarshal(patch, &ops); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// Should remove nvidia.com/gpu from both containers
+	removeCount := 0
+	for _, op := range ops {
+		if op.Op == "remove" && contains(op.Path, "nvidia.com~1gpu") {
+			removeCount++
+		}
+	}
+	if removeCount != 2 {
+		t.Errorf("expected 2 remove ops (one per container), got %d", removeCount)
+	}
+}
+
+func TestExtractInterceptedResources_PerContainerAccounting(t *testing.T) {
+	pod := &corev1.Pod{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name: "train",
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceName(ResourceNvidiaGPU): resource.MustParse("3"),
+						},
+					},
+				},
+				{
+					Name: "sidecar",
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceName(ResourceNvidiaGPU): resource.MustParse("1"),
+						},
+					},
+				},
+			},
+		},
+	}
+
+	interceptMap := map[string]string{ResourceNvidiaGPU: "gpu.nvidia.com"}
+	reqs, err := extractInterceptedResources(pod, interceptMap)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(reqs) != 1 {
+		t.Fatalf("expected 1 intercepted request, got %d", len(reqs))
+	}
+
+	req := reqs[0]
+	if req.TotalCount() != 4 {
+		t.Errorf("total count = %d, want 4", req.TotalCount())
+	}
+	if len(req.PerContainer) != 2 {
+		t.Fatalf("expected 2 per-container entries, got %d", len(req.PerContainer))
+	}
+	if req.PerContainer[0].ContainerIndex != 0 || req.PerContainer[0].Count != 3 {
+		t.Errorf("container 0: index=%d count=%d, want 0/3", req.PerContainer[0].ContainerIndex, req.PerContainer[0].Count)
+	}
+	if req.PerContainer[1].ContainerIndex != 1 || req.PerContainer[1].Count != 1 {
+		t.Errorf("container 1: index=%d count=%d, want 1/1", req.PerContainer[1].ContainerIndex, req.PerContainer[1].Count)
+	}
+}
+
+func TestExtractInterceptedResources_NoMatch(t *testing.T) {
+	pod := &corev1.Pod{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name: "c",
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceCPU: resource.MustParse("1"),
+						},
+					},
+				},
+			},
+		},
+	}
+
+	interceptMap := map[string]string{ResourceNvidiaGPU: "gpu.nvidia.com"}
+	reqs, err := extractInterceptedResources(pod, interceptMap)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(reqs) != 0 {
+		t.Errorf("expected 0 intercepted requests, got %d", len(reqs))
+	}
+}
+
+func TestExtractInterceptedResources_NilMap(t *testing.T) {
+	pod := podWithNvidiaGPU(2)
+	reqs, err := extractInterceptedResources(pod, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reqs != nil {
+		t.Error("expected nil for nil interceptMap")
+	}
+}
+
+func TestMutateExtOnly_IgnoresGPUNICPair(t *testing.T) {
+	cfg := testConfigWithRails()
+	cfg.InterceptExtendedResources = []ExtendedResourceInterception{
+		{ResourceName: ResourceNvidiaGPU, DeviceClassName: "gpu.nvidia.com"},
+	}
+	m := newTestMutatorWithGPUs(cfg, 8)
+
+	pod := podWithGPUNICPairs(2)
+	patch, err := m.MutateExtOnly(context.Background(), pod, "default")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if patch != nil {
+		t.Error("MutateExtOnly should return nil patch for gpu-nic-pair pods")
+	}
+}
+
+func TestMutateExtOnly_InterceptsExtendedResource(t *testing.T) {
+	cfg := testConfigWithRails()
+	cfg.InterceptExtendedResources = []ExtendedResourceInterception{
+		{ResourceName: ResourceNvidiaGPU, DeviceClassName: "gpu.nvidia.com"},
+	}
+	m := newTestMutatorWithGPUs(cfg, 8)
+
+	pod := podWithNvidiaGPU(2)
+	patch, err := m.MutateExtOnly(context.Background(), pod, "default")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if patch == nil {
+		t.Fatal("expected patch from MutateExtOnly for nvidia.com/gpu pod")
+	}
+
+	var ops []jsonPatchOp
+	if err := json.Unmarshal(patch, &ops); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	hasRemove := false
+	for _, op := range ops {
+		if op.Op == "remove" && contains(op.Path, "nvidia.com~1gpu") {
+			hasRemove = true
+		}
+	}
+	if !hasRemove {
+		t.Error("missing remove op for nvidia.com/gpu")
+	}
+}
+
+func TestMutateExtOnly_DoesNotDenyMixedPod(t *testing.T) {
+	cfg := testConfigWithRails()
+	cfg.InterceptExtendedResources = []ExtendedResourceInterception{
+		{ResourceName: ResourceNvidiaGPU, DeviceClassName: "gpu.nvidia.com"},
+	}
+	m := newTestMutatorWithGPUs(cfg, 8)
+
+	// Pod with both resources — MutateExtOnly should only see the intercepted
+	// resource and ignore the gpu-nic-pair. No denial.
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "mixed", Namespace: "default"},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:  "workload",
+					Image: "nvidia/cuda:12.3.0-base-ubuntu22.04",
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceName(ResourceGPUNICPair): resource.MustParse("2"),
+							corev1.ResourceName(ResourceNvidiaGPU):  resource.MustParse("1"),
+						},
+					},
+				},
+			},
+		},
+	}
+
+	patch, err := m.MutateExtOnly(context.Background(), pod, "default")
+	if err != nil {
+		t.Fatalf("MutateExtOnly should not deny mixed pod: %v", err)
+	}
+	if patch == nil {
+		t.Fatal("expected patch for intercepted resource in mixed pod")
+	}
+}
+
 // contains checks if substr is in s.
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(substr) == 0 || searchString(s, substr))

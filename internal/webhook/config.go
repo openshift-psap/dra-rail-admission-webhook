@@ -103,6 +103,15 @@ type NICConfig struct {
 	IBRails         []IBRailEntry `yaml:"ibRails,omitempty"`
 }
 
+// ExtendedResourceInterception defines an extended resource to intercept and
+// convert to DRA ResourceClaims. When listed in Config.InterceptExtendedResources,
+// the webhook strips the named resource from pod containers and creates DRA
+// ResourceClaims using the specified DeviceClass instead.
+type ExtendedResourceInterception struct {
+	ResourceName    string `yaml:"resourceName"`
+	DeviceClassName string `yaml:"deviceClassName"`
+}
+
 // Config holds the webhook configuration loaded from a ConfigMap.
 type Config struct {
 	MaxPairsPerNUMA    int       `yaml:"maxPairsPerNUMA"`
@@ -127,6 +136,13 @@ type Config struct {
 	// from ResourceSlice encapsulation attributes at startup, "ethernet" uses
 	// IPv4-based rail selection, "infiniband" uses PCIe address-based pairing.
 	TransportMode string `yaml:"transportMode,omitempty"`
+
+	// InterceptExtendedResources lists Kubernetes extended resources that should
+	// be intercepted and converted to DRA ResourceClaims. Each entry maps an
+	// extended resource name (e.g., "nvidia.com/gpu") to a DRA DeviceClass name
+	// (e.g., "gpu.nvidia.com"). When empty (default), no extended resources are
+	// intercepted. This is opt-in.
+	InterceptExtendedResources []ExtendedResourceInterception `yaml:"interceptExtendedResources,omitempty"`
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -278,6 +294,40 @@ func ValidatePairingConfig(cfg Config) error {
 	return nil
 }
 
+// InterceptedResourceMap returns a map from extended resource name to device
+// class name for quick lookup. Returns nil if no interception is configured.
+func (c Config) InterceptedResourceMap() map[string]string {
+	if len(c.InterceptExtendedResources) == 0 {
+		return nil
+	}
+	m := make(map[string]string, len(c.InterceptExtendedResources))
+	for _, r := range c.InterceptExtendedResources {
+		m[r.ResourceName] = r.DeviceClassName
+	}
+	return m
+}
+
+// ValidateInterceptConfig validates the extended resource interception config.
+func ValidateInterceptConfig(cfg Config) error {
+	seen := make(map[string]bool, len(cfg.InterceptExtendedResources))
+	for i, r := range cfg.InterceptExtendedResources {
+		if r.ResourceName == "" {
+			return fmt.Errorf("interceptExtendedResources[%d]: resourceName must not be empty", i)
+		}
+		if r.DeviceClassName == "" {
+			return fmt.Errorf("interceptExtendedResources[%d]: deviceClassName must not be empty", i)
+		}
+		if r.ResourceName == ResourceGPUNICPair {
+			return fmt.Errorf("interceptExtendedResources[%d]: cannot intercept %q (handled natively)", i, ResourceGPUNICPair)
+		}
+		if seen[r.ResourceName] {
+			return fmt.Errorf("interceptExtendedResources[%d]: duplicate resourceName %q", i, r.ResourceName)
+		}
+		seen[r.ResourceName] = true
+	}
+	return nil
+}
+
 // ParseConfig parses raw YAML bytes into a validated Config.
 func ParseConfig(data []byte) (Config, error) {
 	cfg := DefaultConfig()
@@ -286,6 +336,9 @@ func ParseConfig(data []byte) (Config, error) {
 	}
 	if err := ValidatePairingConfig(cfg); err != nil {
 		return Config{}, fmt.Errorf("invalid pairing config: %w", err)
+	}
+	if err := ValidateInterceptConfig(cfg); err != nil {
+		return Config{}, fmt.Errorf("invalid intercept config: %w", err)
 	}
 	return cfg, nil
 }

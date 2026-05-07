@@ -291,6 +291,118 @@ func TestDeviceSelectorKeys(t *testing.T) {
 	}
 }
 
+func TestParseConfig_InterceptExtendedResources(t *testing.T) {
+	yaml := `
+maxPairsPerNUMA: 4
+maxPairsPerNode: 8
+gpuDeviceClassName: gpu.nvidia.com
+nicDeviceClassName: dranet
+nicConfig:
+  mtu: 9000
+interceptExtendedResources:
+  - resourceName: "nvidia.com/gpu"
+    deviceClassName: "gpu.nvidia.com"
+`
+	cfg, err := ParseConfig([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.InterceptExtendedResources) != 1 {
+		t.Fatalf("expected 1 intercept entry, got %d", len(cfg.InterceptExtendedResources))
+	}
+	if cfg.InterceptExtendedResources[0].ResourceName != "nvidia.com/gpu" {
+		t.Errorf("resourceName = %q, want nvidia.com/gpu", cfg.InterceptExtendedResources[0].ResourceName)
+	}
+	if cfg.InterceptExtendedResources[0].DeviceClassName != "gpu.nvidia.com" {
+		t.Errorf("deviceClassName = %q, want gpu.nvidia.com", cfg.InterceptExtendedResources[0].DeviceClassName)
+	}
+}
+
+func TestParseConfig_InterceptExtendedResources_Empty(t *testing.T) {
+	yaml := `
+maxPairsPerNUMA: 4
+maxPairsPerNode: 8
+gpuDeviceClassName: gpu.nvidia.com
+nicDeviceClassName: dranet
+nicConfig:
+  mtu: 9000
+`
+	cfg, err := ParseConfig([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.InterceptExtendedResources) != 0 {
+		t.Errorf("expected no intercept entries, got %d", len(cfg.InterceptExtendedResources))
+	}
+	if cfg.InterceptedResourceMap() != nil {
+		t.Error("expected nil InterceptedResourceMap for empty config")
+	}
+}
+
+func TestValidateInterceptConfig_EmptyResourceName(t *testing.T) {
+	cfg := Config{
+		InterceptExtendedResources: []ExtendedResourceInterception{
+			{ResourceName: "", DeviceClassName: "gpu.nvidia.com"},
+		},
+	}
+	if err := ValidateInterceptConfig(cfg); err == nil {
+		t.Error("expected error for empty resourceName")
+	}
+}
+
+func TestValidateInterceptConfig_EmptyDeviceClassName(t *testing.T) {
+	cfg := Config{
+		InterceptExtendedResources: []ExtendedResourceInterception{
+			{ResourceName: "nvidia.com/gpu", DeviceClassName: ""},
+		},
+	}
+	if err := ValidateInterceptConfig(cfg); err == nil {
+		t.Error("expected error for empty deviceClassName")
+	}
+}
+
+func TestValidateInterceptConfig_Duplicate(t *testing.T) {
+	cfg := Config{
+		InterceptExtendedResources: []ExtendedResourceInterception{
+			{ResourceName: "nvidia.com/gpu", DeviceClassName: "gpu.nvidia.com"},
+			{ResourceName: "nvidia.com/gpu", DeviceClassName: "other-class"},
+		},
+	}
+	if err := ValidateInterceptConfig(cfg); err == nil {
+		t.Error("expected error for duplicate resourceName")
+	}
+}
+
+func TestValidateInterceptConfig_ConflictWithGPUNICPair(t *testing.T) {
+	cfg := Config{
+		InterceptExtendedResources: []ExtendedResourceInterception{
+			{ResourceName: ResourceGPUNICPair, DeviceClassName: "gpu.nvidia.com"},
+		},
+	}
+	if err := ValidateInterceptConfig(cfg); err == nil {
+		t.Error("expected error for intercepting gpu-nic-pair resource")
+	}
+}
+
+func TestInterceptedResourceMap(t *testing.T) {
+	cfg := Config{
+		InterceptExtendedResources: []ExtendedResourceInterception{
+			{ResourceName: "nvidia.com/gpu", DeviceClassName: "gpu.nvidia.com"},
+			{ResourceName: "amd.com/gpu", DeviceClassName: "gpu.amd.com"},
+		},
+	}
+	m := cfg.InterceptedResourceMap()
+	if m == nil {
+		t.Fatal("expected non-nil map")
+	}
+	if m["nvidia.com/gpu"] != "gpu.nvidia.com" {
+		t.Errorf("nvidia.com/gpu → %q, want gpu.nvidia.com", m["nvidia.com/gpu"])
+	}
+	if m["amd.com/gpu"] != "gpu.amd.com" {
+		t.Errorf("amd.com/gpu → %q, want gpu.amd.com", m["amd.com/gpu"])
+	}
+}
+
 func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
 	if cfg.MaxPairsPerNUMA != 4 {

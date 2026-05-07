@@ -1,8 +1,13 @@
 # DRA GPU-NIC Admission Webhook — User Guide
 
-This webhook automatically converts a simple resource request into the full DRA (Dynamic Resource Allocation) machinery needed to co-allocate GPU + RDMA NIC pairs with PCIe affinity.
+This webhook converts resource requests into full DRA (Dynamic Resource Allocation) objects, ensuring all GPU and NIC allocation is managed by a single system. It handles two resource types:
+
+- **GPU-NIC pairs** (`dra.llm-d.io/gpu-nic-pair`) — co-allocated GPU + RDMA NIC pairs with PCIe affinity
+- **Extended resource interception** (opt-in) — intercepts standard Kubernetes extended resources like `nvidia.com/gpu` and converts them to DRA ResourceClaims
 
 ## Prerequisites
+
+### For GPU-NIC pairs
 
 Your namespace must have the webhook-enabled label:
 
@@ -15,7 +20,9 @@ metadata:
     dra.llm-d.io/webhook-enabled: "true"
 ```
 
-Pods in namespaces without this label are ignored by the webhook.
+### For extended resource interception
+
+No namespace label needed. The `/mutate-ext` endpoint serves all non-system namespaces automatically. Extended resource interception must be enabled in the webhook ConfigMap (disabled by default).
 
 ---
 
@@ -260,13 +267,85 @@ pairingConfig:
 
 ---
 
+## Extended Resource Interception
+
+When enabled, the webhook intercepts standard Kubernetes extended resources (e.g., `nvidia.com/gpu`) and converts them to DRA ResourceClaims. This ensures all GPU allocation goes through the webhook's allocator and reconciler, preventing conflicts between the NVIDIA device plugin and DRA-based allocation.
+
+### Enabling interception
+
+Add `interceptExtendedResources` to the webhook ConfigMap:
+
+```yaml
+interceptExtendedResources:
+  - resourceName: "nvidia.com/gpu"
+    deviceClassName: "gpu.nvidia.com"
+```
+
+The webhook must be restarted after changing the ConfigMap (it loads config at startup).
+
+### How it works
+
+With interception enabled, a pod requesting `nvidia.com/gpu`:
+
+```yaml
+resources:
+  requests:
+    nvidia.com/gpu: "2"
+  limits:
+    nvidia.com/gpu: "2"
+```
+
+Is mutated to:
+1. `nvidia.com/gpu` stripped from `requests`/`limits`
+2. Two `ResourceClaimTemplate` objects created (one per GPU)
+3. `resourceClaims` injected into the pod spec
+4. Pod pinned to a node with available GPUs
+5. Each container gets only the claim references for the GPUs it requested (per-container binding)
+
+### Namespace scope
+
+Interception works via two webhook endpoints:
+
+| Endpoint | Namespace | Use case |
+|----------|-----------|----------|
+| `/mutate` | Labeled with `dra.llm-d.io/webhook-enabled: "true"` | Full feature set: gpu-nic-pair + intercepted resources |
+| `/mutate-ext` | All except `kube-system`, `openshift-*`, `nvidia-*` | Intercepted resources only, ignores gpu-nic-pair |
+
+Pods in unlabeled namespaces only get extended resource interception via `/mutate-ext`. To use `gpu-nic-pair`, the namespace must be labeled.
+
+### Mutual exclusivity
+
+A pod cannot request both `dra.llm-d.io/gpu-nic-pair` and an intercepted resource (e.g., `nvidia.com/gpu`). Both allocate from the same GPU pool — allowing both would double-claim GPUs. The webhook denies such pods with a clear error.
+
+### When to use
+
+- **Before Kubernetes 1.35**: The NVIDIA device plugin manages `nvidia.com/gpu` as an extended resource. Enable interception to route GPU allocation through DRA instead.
+- **Kubernetes >= 1.35 with `DRAExtendedResource` feature gate**: The scheduler handles extended-to-DRA conversion natively. Interception is not needed — remove the config entry.
+
+### Adding other resources
+
+The config is a list, so additional resources can be intercepted without schema changes:
+
+```yaml
+interceptExtendedResources:
+  - resourceName: "nvidia.com/gpu"
+    deviceClassName: "gpu.nvidia.com"
+  - resourceName: "amd.com/gpu"
+    deviceClassName: "gpu.amd.com"
+```
+
+---
+
 ## Quick Reference
 
 | Item | Value |
 |------|-------|
-| Resource name | `dra.llm-d.io/gpu-nic-pair` |
+| GPU-NIC pair resource | `dra.llm-d.io/gpu-nic-pair` |
 | Cross-NUMA annotation | `dra.llm-d.io/allow-cross-numa: "true"` |
-| Namespace label | `dra.llm-d.io/webhook-enabled: "true"` |
+| Namespace label (gpu-nic-pair) | `dra.llm-d.io/webhook-enabled: "true"` |
 | Mutated marker | `dra.llm-d.io/mutated: "true"` (set by webhook) |
 | Default max per NUMA | 4 |
 | Default max per node | 8 |
+| Interception config | `interceptExtendedResources` (list, empty = disabled) |
+| Full endpoint | `/mutate` (labeled namespaces) |
+| Extended-only endpoint | `/mutate-ext` (all non-system namespaces) |

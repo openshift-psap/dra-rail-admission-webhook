@@ -45,6 +45,14 @@ data:
     # but gives immediate denial with descriptive error instead of
     # leaving pods stuck in Pending.
     preflightCheck: false
+    # Intercept extended resources and convert to DRA ResourceClaims.
+    # Disabled by default (empty list). Enable by listing resources to
+    # intercept. Ensures all resource allocation is managed by the webhook
+    # allocator and reconciler. Not needed on K8s >= 1.35 with
+    # DRAExtendedResource feature gate enabled.
+    # interceptExtendedResources:
+    #   - resourceName: "nvidia.com/gpu"
+    #     deviceClassName: "gpu.nvidia.com"
   reconciler.yaml: |
     # How often to check for orphaned resources
     interval: "5m"

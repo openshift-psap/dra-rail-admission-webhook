@@ -79,11 +79,15 @@ func testEdgeCases(t *testing.T) {
 		t.Log("Pod correctly rejected when webhook is down (failurePolicy: Fail)")
 	})
 
-	// Test 31: ConfigMap missing — webhook should start with defaults
+	// Test 31: ConfigMap missing — webhook should start with defaults.
+	// Defaults have no rail config, so allocation will fail. We only verify
+	// the webhook process starts and serves (readiness probe passes).
 	t.Run("ConfigMapMissing", func(t *testing.T) {
-		// Save and delete the ConfigMap
 		restore := SaveConfigMap(t, f)
-		t.Cleanup(restore)
+		t.Cleanup(func() {
+			restore()
+			RestartAndWait(t, f, f.WebhookNS, webhookDeployment, 3*time.Minute)
+		})
 
 		err := f.KubeClient.CoreV1().ConfigMaps(f.WebhookNS).Delete(
 			context.Background(), f.ConfigMapName, metav1.DeleteOptions{})
@@ -91,18 +95,14 @@ func testEdgeCases(t *testing.T) {
 			t.Fatalf("failed to delete ConfigMap: %v", err)
 		}
 
-		// Restart webhook to pick up missing ConfigMap
 		RestartAndWait(t, f, f.WebhookNS, webhookDeployment, 3*time.Minute)
 
-		// Create a pod — should work with defaults
-		pod := GPUNICPod("configmap-missing", 1)
+		// Webhook started with defaults — verify it's serving by checking
+		// that a normal pod (no gpu-nic-pair) passes through.
+		pod := NormalPod("configmap-missing-normal")
 		created := CreatePod(t, f, pod)
-		AssertPodMutated(t, created)
-		t.Log("Webhook started with defaults when ConfigMap is missing")
-
-		// Restore ConfigMap before cleanup restarts
-		restore()
-		RestartAndWait(t, f, f.WebhookNS, webhookDeployment, 3*time.Minute)
+		AssertPodNotMutated(t, created)
+		t.Log("Webhook started and serving with defaults when ConfigMap is missing")
 	})
 
 	// Test 32: Concurrent requests — multiple pods simultaneously

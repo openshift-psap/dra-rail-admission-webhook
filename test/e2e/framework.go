@@ -79,6 +79,46 @@ func NewFramework(t *testing.T, prefix string) *Framework {
 	}
 }
 
+// NewUnlabeledFramework creates a Framework with a namespace that does NOT have
+// the webhook-enabled label. Pods in this namespace hit /mutate-ext (extended
+// resource interception only), not /mutate.
+func NewUnlabeledFramework(t *testing.T, prefix string) *Framework {
+	t.Helper()
+
+	cfg := buildRestConfig(t)
+	client := kubernetes.NewForConfigOrDie(cfg)
+
+	ns := fmt.Sprintf("e2e-%s-%s", prefix, randomSuffix())
+
+	_, err := client.CoreV1().Namespaces().Create(context.Background(), &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: ns,
+			// No dra.llm-d.io/webhook-enabled label
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("failed to create namespace %s: %v", ns, err)
+	}
+
+	t.Cleanup(func() {
+		_ = client.CoreV1().Namespaces().Delete(context.Background(), ns, metav1.DeleteOptions{})
+	})
+
+	t.Logf("Created unlabeled test namespace: %s", ns)
+
+	webhookNS := envOrDefault("E2E_WEBHOOK_NS", defaultWebhookNS)
+	configMapName := envOrDefault("E2E_CONFIGMAP", defaultConfigMap)
+
+	return &Framework{
+		KubeClient:     client,
+		ResourceClient: client.ResourceV1(),
+		RestConfig:     cfg,
+		Namespace:      ns,
+		WebhookNS:      webhookNS,
+		ConfigMapName:  configMapName,
+	}
+}
+
 // NewFrameworkWithoutNamespace creates a Framework without creating a namespace.
 // Used for edge case tests that manage namespaces manually.
 func NewFrameworkWithoutNamespace(t *testing.T) *Framework {

@@ -41,6 +41,13 @@ const (
 	// AnnotationOrphanedAt marks a resource as orphaned with a timestamp.
 	AnnotationOrphanedAt = "dra.llm-d.io/orphaned-at"
 
-	// MutatePath is the HTTP path for the webhook handler.
+	// MutatePath is the HTTP path for the full webhook handler (labeled namespaces).
 	MutatePath = "/mutate"
+
+	// MutateExtPath is the HTTP path for the extended-resource-only handler.
+	// Serves all non-system namespaces; only processes intercepted resources.
+	MutateExtPath = "/mutate-ext"
+
+	// ResourceNvidiaGPU is the standard Kubernetes extended resource name for NVIDIA GPUs.
+	ResourceNvidiaGPU = "nvidia.com/gpu"
 )

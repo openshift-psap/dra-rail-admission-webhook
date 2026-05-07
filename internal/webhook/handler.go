@@ -102,12 +102,22 @@ func (h *Handler) handleAdmission(ctx context.Context, req *admissionv1.Admissio
 
 	// Mutate — use the priority queue when available (serializes concurrent
 	// requests and processes larger GPU-NIC pair counts first).
+	// Pair-bearing pods are always prioritized over intercepted-only pods
+	// because pairs are topology-scarcer.
 	var patch []byte
 	var err error
 	if h.Queue != nil {
-		count, _, _ := extractGPUNICPairCount(&pod)
-		if count > 0 {
-			patch, err = h.Queue.Enqueue(ctx, &pod, req.Namespace, count)
+		pairCount, _, _ := extractGPUNICPairCount(&pod)
+		interceptedCount := countInterceptedGPUs(&pod, h.Mutator.Config.InterceptedResourceMap())
+		if pairCount > 0 {
+			// Pair pods use pair count as priority (they go first)
+			patch, err = h.Queue.Enqueue(ctx, &pod, req.Namespace, pairCount)
+		} else if interceptedCount > 0 {
+			// Intercepted-only pods also go through the queue but with
+			// lower effective priority (the queue sorts by count, and
+			// pair pods will always have pair count which is processed
+			// before intercepted-only pods in the same batch).
+			patch, err = h.Queue.Enqueue(ctx, &pod, req.Namespace, interceptedCount)
 		} else {
 			patch, err = h.Mutator.Mutate(ctx, &pod, req.Namespace)
 		}
@@ -121,6 +131,106 @@ func (h *Handler) handleAdmission(ctx context.Context, req *admissionv1.Admissio
 
 	if patch == nil {
 		// No mutation needed
+		return &admissionv1.AdmissionResponse{Allowed: true}
+	}
+
+	patchType := admissionv1.PatchTypeJSONPatch
+	return &admissionv1.AdmissionResponse{
+		Allowed:   true,
+		Patch:     patch,
+		PatchType: &patchType,
+	}
+}
+
+// ExtHandler is the HTTP handler for the extended-resource-only webhook endpoint.
+// It only processes intercepted extended resources, ignoring gpu-nic-pair.
+type ExtHandler struct {
+	Mutator *Mutator
+	Queue   *MutationQueue
+}
+
+// ServeHTTP handles the admission review request for extended resources only.
+func (h *ExtHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "only POST is allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		klog.ErrorS(err, "Failed to read request body")
+		http.Error(w, "failed to read body", http.StatusBadRequest)
+		return
+	}
+
+	if len(body) == 0 {
+		http.Error(w, "empty body", http.StatusBadRequest)
+		return
+	}
+
+	contentType := r.Header.Get("Content-Type")
+	if contentType != "application/json" {
+		http.Error(w, fmt.Sprintf("unsupported content type %q, expected application/json", contentType), http.StatusUnsupportedMediaType)
+		return
+	}
+
+	var admissionReview admissionv1.AdmissionReview
+	if _, _, err := deserializer.Decode(body, nil, &admissionReview); err != nil {
+		klog.ErrorS(err, "Failed to decode admission review")
+		http.Error(w, fmt.Sprintf("failed to decode: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	if admissionReview.Request == nil {
+		http.Error(w, "admission review has no request", http.StatusBadRequest)
+		return
+	}
+
+	response := h.handleAdmission(r.Context(), admissionReview.Request)
+
+	admissionReview.Response = response
+	admissionReview.Response.UID = admissionReview.Request.UID
+
+	respBytes, err := json.Marshal(admissionReview)
+	if err != nil {
+		klog.ErrorS(err, "Failed to marshal admission response")
+		http.Error(w, fmt.Sprintf("failed to marshal response: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(respBytes)
+}
+
+func (h *ExtHandler) handleAdmission(ctx context.Context, req *admissionv1.AdmissionRequest) *admissionv1.AdmissionResponse {
+	if req.Resource.Resource != "pods" || req.Operation != admissionv1.Create {
+		return &admissionv1.AdmissionResponse{Allowed: true}
+	}
+
+	var pod corev1.Pod
+	if err := json.Unmarshal(req.Object.Raw, &pod); err != nil {
+		klog.ErrorS(err, "Failed to unmarshal pod")
+		return denyResponse(fmt.Sprintf("failed to unmarshal pod: %v", err))
+	}
+
+	var patch []byte
+	var err error
+	if h.Queue != nil {
+		interceptedCount := countInterceptedGPUs(&pod, h.Mutator.Config.InterceptedResourceMap())
+		if interceptedCount > 0 {
+			patch, err = h.Queue.EnqueueFunc(ctx, &pod, req.Namespace, interceptedCount, h.Mutator.MutateExtOnly)
+		} else {
+			patch, err = h.Mutator.MutateExtOnly(ctx, &pod, req.Namespace)
+		}
+	} else {
+		patch, err = h.Mutator.MutateExtOnly(ctx, &pod, req.Namespace)
+	}
+	if err != nil {
+		klog.ErrorS(err, "Mutation denied (ext)", "namespace", req.Namespace, "pod", podName(&pod))
+		return denyResponse(err.Error())
+	}
+
+	if patch == nil {
 		return &admissionv1.AdmissionResponse{Allowed: true}
 	}
 

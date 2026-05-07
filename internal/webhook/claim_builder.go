@@ -42,7 +42,7 @@ func buildNICSelectors(railIndex int, cfg Config) []resourcev1.DeviceSelector {
 			selectors = append(selectors, resourcev1.DeviceSelector{
 				CEL: &resourcev1.CELDeviceSelector{
 					Expression: fmt.Sprintf(
-						`device.attributes["dra.net"].rdma == true && device.attributes["dra.net"].ipv4.startsWith(%q)`,
+						`device.attributes["dra.net"].rdma == true && has(device.attributes["dra.net"].ipv4) && device.attributes["dra.net"].ipv4.startsWith(%q)`,
 						rail.IPv4Prefix,
 					),
 				},
@@ -51,7 +51,7 @@ func buildNICSelectors(railIndex int, cfg Config) []resourcev1.DeviceSelector {
 			selectors = append(selectors, resourcev1.DeviceSelector{
 				CEL: &resourcev1.CELDeviceSelector{
 					Expression: fmt.Sprintf(
-						`device.attributes["dra.net"].ipv4.startsWith(%q)`,
+						`has(device.attributes["dra.net"].ipv4) && device.attributes["dra.net"].ipv4.startsWith(%q)`,
 						rail.IPv4Prefix,
 					),
 				},
@@ -454,6 +454,38 @@ func ExplicitPairTemplateName(nicIndex int, railIndex int, pair ExplicitPairMapp
 	_, _ = fmt.Fprintf(h, "explicit:nic:%d:rail:%d", nicIndex, railIndex)
 	hash := fmt.Sprintf("%x", h.Sum(nil))[:8]
 	return fmt.Sprintf("gpu-nic-pair-%d-rail%d-%s", nicIndex, railIndex, hash)
+}
+
+// BuildExtendedResourceClaimSpec builds a ResourceClaimSpec for a single device
+// allocated via extended resource interception. No NIC pairing, no opaque config.
+// When numaConstrained is true, claims from the same pod will share a NUMA
+// locality constraint (applied at the pod-level claim composition, not here).
+func BuildExtendedResourceClaimSpec(deviceClassName string) resourcev1.ResourceClaimSpec {
+	return resourcev1.ResourceClaimSpec{
+		Devices: resourcev1.DeviceClaim{
+			Requests: []resourcev1.DeviceRequest{
+				{
+					Name: "device",
+					Exactly: &resourcev1.ExactDeviceRequest{
+						DeviceClassName: deviceClassName,
+						Count:           1,
+						AllocationMode:  resourcev1.DeviceAllocationModeExactCount,
+					},
+				},
+			},
+		},
+	}
+}
+
+// ExtendedResourceTemplateName returns a deterministic name for an extended
+// resource ResourceClaimTemplate.
+func ExtendedResourceTemplateName(index int, deviceClassName string, cfg Config) string {
+	h := sha256.New()
+	data, _ := json.Marshal(cfg)
+	h.Write(data)
+	_, _ = fmt.Fprintf(h, "ext:%s:%d", deviceClassName, index)
+	hash := fmt.Sprintf("%x", h.Sum(nil))[:8]
+	return fmt.Sprintf("ext-resource-%d-%s", index, hash)
 }
 
 // TemplateName returns a deterministic name for a ResourceClaimTemplate
