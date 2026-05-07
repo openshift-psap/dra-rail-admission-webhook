@@ -81,11 +81,9 @@ func testPreflight(t *testing.T) {
 		createBlockerPodsOnAllNodes(t, f, "exhaust-blocker", 7, gpuNodes)
 		t.Log("All GPU nodes blocked (7/8 pairs consumed each)")
 
-		// Wait for blocker pods to be running before testing denials.
-		// On IB, DRAnet doesn't strip ifName on allocation, so we can't
-		// detect availability via ResourceSlice attributes. Instead wait
-		// for the allocator's pending tracking to register the blockers.
-		time.Sleep(10 * time.Second)
+		// Wait for ResourceSlices to reflect consumed NICs. With 7 of 8
+		// pairs consumed, at most 1 RDMA NIC should remain per node.
+		waitForNICAvailability(t, f, gpuNodes, 1, 3*time.Minute)
 
 		// Test 17: NUMA-constrained request for 2 → denied (no zone has ≥2)
 		t.Run("InsufficientNUMA", func(t *testing.T) {
