@@ -1,30 +1,4 @@
-# DRA GPU-NIC Admission Webhook — User Guide
-
-This webhook converts resource requests into full DRA (Dynamic Resource Allocation) objects, ensuring all GPU and NIC allocation is managed by a single system. It handles two resource types:
-
-- **GPU-NIC pairs** (`dra.llm-d.io/gpu-nic-pair`) — co-allocated GPU + RDMA NIC pairs with PCIe affinity
-- **Extended resource interception** (opt-in) — intercepts standard Kubernetes extended resources like `nvidia.com/gpu` and converts them to DRA ResourceClaims
-
-## Prerequisites
-
-### For GPU-NIC pairs
-
-Your namespace must have the webhook-enabled label:
-
-```yaml
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: my-namespace
-  labels:
-    dra.llm-d.io/webhook-enabled: "true"
-```
-
-### For extended resource interception
-
-No namespace label needed. The `/mutate-ext` endpoint serves all non-system namespaces automatically. Extended resource interception must be enabled in the webhook ConfigMap (disabled by default).
-
----
+# User Guide
 
 ## Requesting GPU-NIC Pairs
 
@@ -75,7 +49,7 @@ spec:
             dra.llm-d.io/gpu-nic-pair: "4"
 ```
 
-The webhook mutates each pod at admission time. The synthetic resource is stripped from `requests`/`limits` and replaced with proper DRA references. You never need to write `ResourceClaim` or `ResourceClaimTemplate` objects yourself.
+The webhook mutates each pod at admission time. The synthetic resource is stripped from `requests`/`limits` and replaced with proper DRA references.
 
 ---
 
@@ -88,33 +62,21 @@ The webhook mutates each pod at admission time. The synthetic resource is stripp
 | 8     | Automatic cross-NUMA | Full node allocation, both NUMA zones used |
 | >8    | **Rejected** | Exceeds maximum per node |
 
-Defaults: `maxPairsPerNUMA=4`, `maxPairsPerNode=8` (configurable via the webhook ConfigMap).
+Defaults: `maxPairsPerNUMA=4`, `maxPairsPerNode=8` (configurable).
 
 ---
 
 ## Cross-NUMA Annotation
 
-For counts between `maxPairsPerNUMA+1` and `maxPairsPerNode-1` (default: 5-7), you must explicitly opt in to cross-NUMA allocation:
+For counts between `maxPairsPerNUMA+1` and `maxPairsPerNode-1` (default: 5-7), explicitly opt in to cross-NUMA allocation:
 
 ```yaml
-apiVersion: v1
-kind: Pod
 metadata:
-  name: large-worker
   annotations:
     dra.llm-d.io/allow-cross-numa: "true"
-spec:
-  containers:
-  - name: model
-    image: my-model:latest
-    resources:
-      requests:
-        dra.llm-d.io/gpu-nic-pair: "6"
-      limits:
-        dra.llm-d.io/gpu-nic-pair: "6"
 ```
 
-This tells the webhook (and the DRA scheduler) that pairs may span both NUMA zones on a node. PCIe affinity between each GPU-NIC pair is still enforced.
+PCIe affinity between each GPU-NIC pair is still enforced.
 
 ---
 
@@ -127,30 +89,58 @@ When a pod with `dra.llm-d.io/gpu-nic-pair` is created, the webhook:
 3. **Creates a `ResourceClaimTemplate`** (if one doesn't already exist for this count + mode)
 4. **Injects `resourceClaims`** into the pod spec referencing that template
 5. **Strips** the synthetic resource from container `requests` and `limits`
-6. **Annotates** the pod with `dra.llm-d.io/mutated: "true"`
-
-On **Ethernet** clusters, the resulting `ResourceClaim` uses `matchAttribute` constraints on `pcieRoot` and `numaNode` for hardware affinity. On **InfiniBand** clusters, GPU and NIC are pinned by exact PCIe address from the configured `ibRails` mapping.
+6. **Pins** the pod to the allocator-selected node via node affinity
+7. **Annotates** the pod with `dra.llm-d.io/mutated: "true"`
 
 ---
 
-## InfiniBand Support
+## Configuration Reference
 
-The webhook auto-detects InfiniBand transport from `dra.net/encapsulation` attributes at startup. On IB clusters, configure `ibRails` instead of `rails` in the ConfigMap:
+All configuration is loaded from a ConfigMap (`deploy/base/configmap.yaml`). The webhook loads config at startup and requires a restart to pick up changes.
+
+### Ethernet (RoCE)
 
 ```yaml
-transportMode: auto          # auto-detects from ResourceSlice attributes
+transportMode: auto          # "auto", "ethernet", or "infiniband"
+maxPairsPerNUMA: 4
+maxPairsPerNode: 8
+gpuDeviceClassName: gpu.nvidia.com
+nicDeviceClassName: dranet
+preflightCheck: false         # opt-in availability check
+nicConfig:
+  mtu: 9000
+  rdmaRequired: true
+  interfacePrefix: "net"
+  startingTableId: 100
+  crossRailCIDR: "10.0.0.0/13"
+  rails:
+    - subnet: "10.0.0.0/16"
+      gateway: "10.0.0.1"
+      ipv4Prefix: "10.0."
+    - subnet: "10.1.0.0/16"
+      gateway: "10.1.0.1"
+      ipv4Prefix: "10.1."
+    # ... one per rail
+```
+
+### InfiniBand
+
+The webhook auto-detects InfiniBand transport from `dra.net/encapsulation` attributes at startup. Configure `ibRails` instead of `rails`:
+
+```yaml
+transportMode: auto
 nicConfig:
   mtu: 2044                  # IPoIB MTU
   rdmaRequired: true
   ibRails:                   # GPU+NIC PCIe address pairs (list index = rail index)
-    - gpu: "0001:00:00.0"    # rail 0, NUMA 0
+    - gpu: "0001:00:00.0"    # rail 0
       nic: "0101:00:00.0"
     - gpu: "0002:00:00.0"    # rail 1
       nic: "0102:00:00.0"
     # ... one entry per GPU-NIC pair on the node
 ```
 
-### How IB mode differs from Ethernet
+#### How IB mode differs from Ethernet
 
 | Aspect | Ethernet | InfiniBand |
 |--------|----------|------------|
@@ -159,15 +149,13 @@ nicConfig:
 | Routing config | Policy routes + cross-rail gateway | None (IB fabric handles forwarding) |
 | Availability detection | `dra.net/ipv4` attribute presence | ResourceClaim inspection |
 
-### Finding PCIe address pairs
+#### Finding PCIe address pairs
 
 The `ibRails` mapping comes from your VM's PCIe topology. For Azure ND-series, the topology file is at:
 - Host path: `/opt/microsoft/ndv5-topo.xml`
 - GitHub: [Azure/azhpc-images/topology/ndv5-topo.xml](https://github.com/Azure/azhpc-images/blob/master/topology/ndv5-topo.xml)
 
-Each `<pci>` bridge in the topology contains one GPU (class `0x030200`) and one NIC (class `0x020700`) — these form a pair.
-
-You can also extract pairs from DRA ResourceSlices:
+Extract pairs from DRA ResourceSlices:
 
 ```bash
 # GPU PCIe bus IDs
@@ -177,64 +165,56 @@ kubectl get resourceslice -o json | jq -r '.items[] | select(.spec.driver=="gpu.
 kubectl get resourceslice -o json | jq -r '.items[] | select(.spec.driver=="dra.net") | .spec.devices[] | select(.attributes["dra.net/rdma"].bool==true) | .attributes["dra.net/pciAddress"].string'
 ```
 
----
+### Extended Resource Interception
 
-## Kustomize Overlays
+Intercept standard Kubernetes extended resources (e.g., `nvidia.com/gpu`) and convert them to DRA ResourceClaims. Disabled by default (empty list). Ensures all GPU allocation goes through the webhook's allocator and reconciler.
 
-The `deploy/base/` directory contains canonical manifests with Ethernet defaults. For cluster-specific configuration (images, transport, rails), use a kustomize overlay:
-
-```text
-deploy/overlays/aks-ndv5/
-  kustomization.yaml        # References ../../base
-  webhook-patch.yaml        # Image tag, replicas
-  reconciler-patch.yaml     # Image tag
-  configmap-patch.yaml      # IB transport, ibRails, MTU
+```yaml
+interceptExtendedResources:
+  - resourceName: "nvidia.com/gpu"
+    deviceClassName: "gpu.nvidia.com"
 ```
 
-Deploy:
+With interception enabled, a pod requesting `nvidia.com/gpu: 2` is mutated the same way as `gpu-nic-pair`: the resource is stripped, ResourceClaims are created, and the pod is pinned to a node.
 
-```bash
-kubectl apply -k deploy/overlays/aks-ndv5/
+**Per-container binding**: each container gets only the claim references for the GPUs it requested (container A requesting 3 GPUs gets 3 refs, container B requesting 1 gets 1).
+
+**Mutual exclusivity**: a pod cannot request both `dra.llm-d.io/gpu-nic-pair` and an intercepted resource. Both allocate from the same GPU pool.
+
+**Namespace scope**: interception works via two webhook endpoints:
+
+| Endpoint | Namespace | Use case |
+|----------|-----------|----------|
+| `/mutate` | Labeled with `dra.llm-d.io/webhook-enabled: "true"` | Full feature set |
+| `/mutate-ext` | All except `kube-system`, `openshift-*`, `nvidia-*` | Intercepted resources only |
+
+**When to use**:
+- Before Kubernetes 1.35: enable interception to route GPU allocation through DRA
+- Kubernetes >= 1.35 with `DRAExtendedResource` feature gate: not needed, remove the config
+
+Multiple resources can be intercepted:
+
+```yaml
+interceptExtendedResources:
+  - resourceName: "nvidia.com/gpu"
+    deviceClassName: "gpu.nvidia.com"
+  - resourceName: "amd.com/gpu"
+    deviceClassName: "gpu.amd.com"
 ```
 
-Create a new overlay by copying an existing one and updating `configmap-patch.yaml` with your cluster's topology.
+### Advanced Configuration
 
----
+#### Disable NUMA Packing
 
-## E2E Testing
-
-Run e2e tests against a cluster with DRA drivers installed:
-
-```bash
-# Test against an already-deployed webhook
-E2E_KUBECONFIG=~/.kube/config \
-  go test -v -tags e2e -timeout 45m -count 1 ./test/e2e/
-
-# Deploy from overlay before testing
-E2E_KUBECONFIG=~/.kube/config \
-E2E_DEPLOY_OVERLAY=deploy/overlays/aks-ndv5 \
-  go test -v -tags e2e -timeout 45m -count 1 ./test/e2e/
-```
-
-When `E2E_DEPLOY_OVERLAY` is set, `TestMain` runs `kubectl apply -k` on the overlay and waits for rollout before starting tests.
-
----
-
-## Advanced Configuration
-
-### Disable NUMA Packing
-
-By default, the allocator packs small requests onto the most-utilized NUMA zone, keeping the other zone's full capacity available for larger requests. To disable this heuristic:
+By default, the allocator packs small requests onto the most-utilized NUMA zone, keeping the other zone's full capacity available for larger requests:
 
 ```yaml
 disableNUMAPacking: true
 ```
 
-When disabled, the allocator does not prefer specific NUMA zones for small requests.
+#### Explicit Pairing Mode (experimental)
 
-### Explicit Pairing Mode (experimental)
-
-For clusters where automatic rail discovery doesn't work, explicit pairing mode lets admins define exact device-to-device mappings per node pool:
+For clusters where automatic rail discovery doesn't work, explicit pairing mode defines exact device-to-device mappings per node pool:
 
 ```yaml
 pairingMode: explicit
@@ -260,79 +240,9 @@ pairingConfig:
         - devices: { gpu: "GPU-UUID-2", nic: "net1" }
           rail: 1
           numa: 0
-        # ... one entry per GPU-NIC pair
 ```
 
-> **Note:** Explicit pairing mode has known issues being tracked in [#9](https://github.com/openshift-psap/dra-rail-admission-webhook/issues/9), [#10](https://github.com/openshift-psap/dra-rail-admission-webhook/issues/10), [#11](https://github.com/openshift-psap/dra-rail-admission-webhook/issues/11), and [#12](https://github.com/openshift-psap/dra-rail-admission-webhook/issues/12). Use auto mode (with `rails` or `ibRails`) for production deployments.
-
----
-
-## Extended Resource Interception
-
-When enabled, the webhook intercepts standard Kubernetes extended resources (e.g., `nvidia.com/gpu`) and converts them to DRA ResourceClaims. This ensures all GPU allocation goes through the webhook's allocator and reconciler, preventing conflicts between the NVIDIA device plugin and DRA-based allocation.
-
-### Enabling interception
-
-Add `interceptExtendedResources` to the webhook ConfigMap:
-
-```yaml
-interceptExtendedResources:
-  - resourceName: "nvidia.com/gpu"
-    deviceClassName: "gpu.nvidia.com"
-```
-
-The webhook must be restarted after changing the ConfigMap (it loads config at startup).
-
-### How it works
-
-With interception enabled, a pod requesting `nvidia.com/gpu`:
-
-```yaml
-resources:
-  requests:
-    nvidia.com/gpu: "2"
-  limits:
-    nvidia.com/gpu: "2"
-```
-
-Is mutated to:
-1. `nvidia.com/gpu` stripped from `requests`/`limits`
-2. Two `ResourceClaimTemplate` objects created (one per GPU)
-3. `resourceClaims` injected into the pod spec
-4. Pod pinned to a node with available GPUs
-5. Each container gets only the claim references for the GPUs it requested (per-container binding)
-
-### Namespace scope
-
-Interception works via two webhook endpoints:
-
-| Endpoint | Namespace | Use case |
-|----------|-----------|----------|
-| `/mutate` | Labeled with `dra.llm-d.io/webhook-enabled: "true"` | Full feature set: gpu-nic-pair + intercepted resources |
-| `/mutate-ext` | All except `kube-system`, `openshift-*`, `nvidia-*` | Intercepted resources only, ignores gpu-nic-pair |
-
-Pods in unlabeled namespaces only get extended resource interception via `/mutate-ext`. To use `gpu-nic-pair`, the namespace must be labeled.
-
-### Mutual exclusivity
-
-A pod cannot request both `dra.llm-d.io/gpu-nic-pair` and an intercepted resource (e.g., `nvidia.com/gpu`). Both allocate from the same GPU pool — allowing both would double-claim GPUs. The webhook denies such pods with a clear error.
-
-### When to use
-
-- **Before Kubernetes 1.35**: The NVIDIA device plugin manages `nvidia.com/gpu` as an extended resource. Enable interception to route GPU allocation through DRA instead.
-- **Kubernetes >= 1.35 with `DRAExtendedResource` feature gate**: The scheduler handles extended-to-DRA conversion natively. Interception is not needed — remove the config entry.
-
-### Adding other resources
-
-The config is a list, so additional resources can be intercepted without schema changes:
-
-```yaml
-interceptExtendedResources:
-  - resourceName: "nvidia.com/gpu"
-    deviceClassName: "gpu.nvidia.com"
-  - resourceName: "amd.com/gpu"
-    deviceClassName: "gpu.amd.com"
-```
+> **Note:** Explicit pairing mode has known issues being tracked in [#9](https://github.com/openshift-psap/dra-rail-admission-webhook/issues/9), [#10](https://github.com/openshift-psap/dra-rail-admission-webhook/issues/10), [#11](https://github.com/openshift-psap/dra-rail-admission-webhook/issues/11), and [#12](https://github.com/openshift-psap/dra-rail-admission-webhook/issues/12). Use auto mode (with `rails` or `ibRails`) for production.
 
 ---
 
