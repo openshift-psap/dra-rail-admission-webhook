@@ -43,4 +43,7 @@ const (
 
 	// MutatePath is the HTTP path for the webhook handler.
 	MutatePath = "/mutate"
+
+	// ResourceNvidiaGPU is the standard Kubernetes extended resource name for NVIDIA GPUs.
+	ResourceNvidiaGPU = "nvidia.com/gpu"
 )

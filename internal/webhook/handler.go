@@ -102,12 +102,22 @@ func (h *Handler) handleAdmission(ctx context.Context, req *admissionv1.Admissio
 
 	// Mutate — use the priority queue when available (serializes concurrent
 	// requests and processes larger GPU-NIC pair counts first).
+	// Pair-bearing pods are always prioritized over intercepted-only pods
+	// because pairs are topology-scarcer.
 	var patch []byte
 	var err error
 	if h.Queue != nil {
-		count, _, _ := extractGPUNICPairCount(&pod)
-		if count > 0 {
-			patch, err = h.Queue.Enqueue(ctx, &pod, req.Namespace, count)
+		pairCount, _, _ := extractGPUNICPairCount(&pod)
+		interceptedCount := countInterceptedGPUs(&pod, h.Mutator.Config.InterceptedResourceMap())
+		if pairCount > 0 {
+			// Pair pods use pair count as priority (they go first)
+			patch, err = h.Queue.Enqueue(ctx, &pod, req.Namespace, pairCount)
+		} else if interceptedCount > 0 {
+			// Intercepted-only pods also go through the queue but with
+			// lower effective priority (the queue sorts by count, and
+			// pair pods will always have pair count which is processed
+			// before intercepted-only pods in the same batch).
+			patch, err = h.Queue.Enqueue(ctx, &pod, req.Namespace, interceptedCount)
 		} else {
 			patch, err = h.Mutator.Mutate(ctx, &pod, req.Namespace)
 		}

@@ -896,3 +896,54 @@ func TestTemplateName_DifferentRails(t *testing.T) {
 		t.Errorf("same rail indices should produce same name: %q vs %q", name2, name3)
 	}
 }
+
+func TestBuildExtendedResourceClaimSpec(t *testing.T) {
+	spec := BuildExtendedResourceClaimSpec("gpu.nvidia.com")
+
+	if len(spec.Devices.Requests) != 1 {
+		t.Fatalf("expected 1 request, got %d", len(spec.Devices.Requests))
+	}
+	req := spec.Devices.Requests[0]
+	if req.Name != "device" {
+		t.Errorf("request name = %q, want device", req.Name)
+	}
+	if req.Exactly.DeviceClassName != "gpu.nvidia.com" {
+		t.Errorf("deviceClass = %q, want gpu.nvidia.com", req.Exactly.DeviceClassName)
+	}
+	if req.Exactly.Count != 1 {
+		t.Errorf("count = %d, want 1", req.Exactly.Count)
+	}
+	if len(spec.Devices.Constraints) != 0 {
+		t.Errorf("expected 0 constraints, got %d", len(spec.Devices.Constraints))
+	}
+	if len(spec.Devices.Config) != 0 {
+		t.Errorf("expected 0 config entries, got %d", len(spec.Devices.Config))
+	}
+}
+
+func TestExtendedResourceTemplateName_Deterministic(t *testing.T) {
+	cfg := testConfig()
+	name1 := ExtendedResourceTemplateName(0, "gpu.nvidia.com", cfg)
+	name2 := ExtendedResourceTemplateName(0, "gpu.nvidia.com", cfg)
+	if name1 != name2 {
+		t.Errorf("names should be deterministic: %q vs %q", name1, name2)
+	}
+}
+
+func TestExtendedResourceTemplateName_DifferentIndices(t *testing.T) {
+	cfg := testConfig()
+	name0 := ExtendedResourceTemplateName(0, "gpu.nvidia.com", cfg)
+	name1 := ExtendedResourceTemplateName(1, "gpu.nvidia.com", cfg)
+	if name0 == name1 {
+		t.Error("different indices should produce different names")
+	}
+}
+
+func TestExtendedResourceTemplateName_DifferentDeviceClass(t *testing.T) {
+	cfg := testConfig()
+	name1 := ExtendedResourceTemplateName(0, "gpu.nvidia.com", cfg)
+	name2 := ExtendedResourceTemplateName(0, "gpu.amd.com", cfg)
+	if name1 == name2 {
+		t.Error("different device classes should produce different names")
+	}
+}

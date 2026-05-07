@@ -85,7 +85,14 @@ func main() {
 		"nicMTU", cfg.NICConfig.MTU,
 		"transportMode", cfg.TransportMode,
 		"ibRails", len(cfg.NICConfig.IBRails),
+		"interceptedResources", len(cfg.InterceptExtendedResources),
 	)
+
+	for _, r := range cfg.InterceptExtendedResources {
+		klog.InfoS("Extended resource interception enabled",
+			"resourceName", r.ResourceName,
+			"deviceClassName", r.DeviceClassName)
+	}
 
 	// Create cluster-level allocator
 	allocator := webhook.NewAllocator(kubeClient.ResourceV1(), kubeClient, cfg)

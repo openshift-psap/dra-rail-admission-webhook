@@ -456,6 +456,38 @@ func ExplicitPairTemplateName(nicIndex int, railIndex int, pair ExplicitPairMapp
 	return fmt.Sprintf("gpu-nic-pair-%d-rail%d-%s", nicIndex, railIndex, hash)
 }
 
+// BuildExtendedResourceClaimSpec builds a ResourceClaimSpec for a single device
+// allocated via extended resource interception. No NIC pairing, no opaque config.
+// When numaConstrained is true, claims from the same pod will share a NUMA
+// locality constraint (applied at the pod-level claim composition, not here).
+func BuildExtendedResourceClaimSpec(deviceClassName string) resourcev1.ResourceClaimSpec {
+	return resourcev1.ResourceClaimSpec{
+		Devices: resourcev1.DeviceClaim{
+			Requests: []resourcev1.DeviceRequest{
+				{
+					Name: "device",
+					Exactly: &resourcev1.ExactDeviceRequest{
+						DeviceClassName: deviceClassName,
+						Count:           1,
+						AllocationMode:  resourcev1.DeviceAllocationModeExactCount,
+					},
+				},
+			},
+		},
+	}
+}
+
+// ExtendedResourceTemplateName returns a deterministic name for an extended
+// resource ResourceClaimTemplate.
+func ExtendedResourceTemplateName(index int, deviceClassName string, cfg Config) string {
+	h := sha256.New()
+	data, _ := json.Marshal(cfg)
+	h.Write(data)
+	_, _ = fmt.Fprintf(h, "ext:%s:%d", deviceClassName, index)
+	hash := fmt.Sprintf("%x", h.Sum(nil))[:8]
+	return fmt.Sprintf("ext-resource-%d-%s", index, hash)
+}
+
 // TemplateName returns a deterministic name for a ResourceClaimTemplate
 // based on count, NUMA mode, config, and selected rail indices.
 func TemplateName(count int, numaConstrained bool, cfg Config, railIndices []int) string {

@@ -419,6 +419,137 @@ func (a *Allocator) scanExplicitAvailability(ctx context.Context, poolMapping *N
 	return result, nil
 }
 
+// AllocateExtendedResource finds a node with enough free devices of the given
+// device class to satisfy the request. If constrainToNode is non-empty, only
+// that node is considered (used when gpu-nic-pairs have already been allocated).
+func (a *Allocator) AllocateExtendedResource(ctx context.Context, pod *corev1.Pod, namespace string, count int, deviceClassName string, constrainToNode string) (string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.expirePending()
+
+	nodeDevices, err := a.scanAvailableDevices(ctx, deviceClassName)
+	if err != nil {
+		return "", fmt.Errorf("failed to scan devices for %s: %w", deviceClassName, err)
+	}
+
+	// Subtract pending extended resource allocations
+	for key := range a.pending {
+		if !strings.HasPrefix(key, "ext:") {
+			continue
+		}
+		// key format: "ext:deviceClassName:nodeName:index"
+		parts := strings.SplitN(key, ":", 4)
+		if len(parts) != 4 || parts[1] != deviceClassName {
+			continue
+		}
+		nodeName := parts[2]
+		if c, ok := nodeDevices[nodeName]; ok && c > 0 {
+			nodeDevices[nodeName] = c - 1
+		}
+	}
+
+	if constrainToNode != "" {
+		available := nodeDevices[constrainToNode]
+		if available < count {
+			return "", fmt.Errorf("node %s has %d available %s devices, need %d", constrainToNode, available, deviceClassName, count)
+		}
+
+		now := time.Now()
+		for i := 0; i < count; i++ {
+			a.pending[fmt.Sprintf("ext:%s:%s:%d", deviceClassName, constrainToNode, i)] = now
+		}
+
+		klog.InfoS("Allocated extended resource devices (constrained)",
+			"node", constrainToNode, "deviceClass", deviceClassName, "count", count)
+		return constrainToNode, nil
+	}
+
+	// Build dummy slot map for filterNodesByConstraints
+	dummySlots := make(map[string][]NICSlot)
+	for nodeName, avail := range nodeDevices {
+		if avail >= count {
+			dummySlots[nodeName] = []NICSlot{{NodeName: nodeName}}
+		}
+	}
+
+	candidates, err := a.filterNodesByConstraints(ctx, pod, namespace, dummySlots)
+	if err != nil {
+		return "", err
+	}
+	if len(candidates) == 0 {
+		return "", fmt.Errorf("no node has %d available %s devices satisfying scheduling constraints", count, deviceClassName)
+	}
+
+	// Pack: fewest free devices first
+	sort.Slice(candidates, func(i, j int) bool {
+		return nodeDevices[candidates[i]] < nodeDevices[candidates[j]]
+	})
+
+	for _, nodeName := range candidates {
+		if nodeDevices[nodeName] < count {
+			continue
+		}
+
+		now := time.Now()
+		for i := 0; i < count; i++ {
+			a.pending[fmt.Sprintf("ext:%s:%s:%d", deviceClassName, nodeName, i)] = now
+		}
+
+		klog.InfoS("Allocated extended resource devices",
+			"node", nodeName, "deviceClass", deviceClassName, "count", count)
+		return nodeName, nil
+	}
+
+	return "", fmt.Errorf("no node has %d available %s devices", count, deviceClassName)
+}
+
+// scanAvailableDevices counts available devices per node from ResourceSlices
+// for the given driver/device class, subtracting consumed devices from allocated
+// ResourceClaims.
+func (a *Allocator) scanAvailableDevices(ctx context.Context, deviceClassName string) (map[string]int, error) {
+	slices, err := a.ResourceClient.ResourceSlices().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list resource slices: %w", err)
+	}
+
+	nodeDevices := make(map[string]int)
+	for _, slice := range slices.Items {
+		if slice.Spec.Driver != deviceClassName {
+			continue
+		}
+		nodeName := ""
+		if slice.Spec.NodeName != nil {
+			nodeName = *slice.Spec.NodeName
+		}
+		if nodeName == "" {
+			continue
+		}
+		for range slice.Spec.Devices {
+			nodeDevices[nodeName]++
+		}
+	}
+
+	// Subtract consumed devices from allocated ResourceClaims
+	claims, err := a.KubeClient.ResourceV1().ResourceClaims("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		klog.V(2).ErrorS(err, "Failed to list ResourceClaims for device availability check")
+		return nodeDevices, nil
+	}
+	for _, claim := range claims.Items {
+		if claim.Status.Allocation == nil {
+			continue
+		}
+		for _, result := range claim.Status.Allocation.Devices.Results {
+			if result.Driver == deviceClassName {
+				nodeDevices[result.Pool]--
+			}
+		}
+	}
+
+	return nodeDevices, nil
+}
+
 // scanAvailableSlots reads ResourceSlices and returns available NIC slots
 // grouped by node. A NIC is available if it has the ipv4 attribute present
 // (allocated NICs have ipv4 stripped by the dranet driver).
