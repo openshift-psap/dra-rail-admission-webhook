@@ -1,12 +1,14 @@
 # DRA GPU-NIC Admission Webhook
 
-A Kubernetes mutating admission webhook that converts a simple resource request (`dra.llm-d.io/gpu-nic-pair: "N"`) into full [Dynamic Resource Allocation (DRA)](https://kubernetes.io/docs/concepts/scheduling-eviction/dynamic-resource-allocation/) objects, co-allocating GPU + RDMA NIC pairs with PCIe affinity.
+A Kubernetes mutating admission webhook that converts resource requests into full [Dynamic Resource Allocation (DRA)](https://kubernetes.io/docs/concepts/scheduling-eviction/dynamic-resource-allocation/) objects, ensuring all GPU and NIC allocation is managed by a single system.
 
 Supports both **Ethernet (RoCE)** and **InfiniBand** fabrics with automatic transport detection.
 
 ## Overview
 
-Writing DRA `ResourceClaim` and `ResourceClaimTemplate` objects by hand is complex and error-prone. This webhook lets users request GPU-NIC pairs with a single line in their pod spec:
+Writing DRA `ResourceClaim` and `ResourceClaimTemplate` objects by hand is complex and error-prone. This webhook handles two resource types:
+
+**GPU-NIC Pairs** — request co-allocated GPU + RDMA NIC pairs with PCIe affinity:
 
 ```yaml
 resources:
@@ -16,12 +18,23 @@ resources:
     dra.llm-d.io/gpu-nic-pair: "2"
 ```
 
+**Extended Resource Interception** (opt-in) — intercept standard Kubernetes extended resources like `nvidia.com/gpu` and convert them to DRA ResourceClaims:
+
+```yaml
+resources:
+  requests:
+    nvidia.com/gpu: "2"
+  limits:
+    nvidia.com/gpu: "2"
+```
+
 The webhook intercepts pod creation and:
 
-1. **Validates** the requested count against NUMA/node limits
-2. **Creates** `ResourceClaimTemplate` objects with GPU + NIC device requests and topology constraints
+1. **Validates** the requested count against limits
+2. **Creates** `ResourceClaimTemplate` objects with device requests and topology constraints
 3. **Injects** `resourceClaims` into the pod spec referencing the templates
-4. **Strips** the synthetic resource from `requests`/`limits`
+4. **Strips** the original resource from `requests`/`limits`
+5. **Pins** the pod to a specific node via node affinity
 
 ## Components
 
@@ -63,6 +76,18 @@ E2E_KUBECONFIG=~/.kube/config E2E_DEPLOY_OVERLAY=deploy/overlays/aks-ndv5 \
 ## Configuration
 
 The webhook is configured via a `ConfigMap` (`deploy/configmap.yaml`). See [docs/user-guide.md](docs/user-guide.md) for detailed options.
+
+### Extended Resource Interception (opt-in)
+
+Intercept standard Kubernetes extended resources and convert them to DRA ResourceClaims. Disabled by default (empty list). This ensures all GPU allocation goes through the webhook's allocator and reconciler, preventing conflicts with the NVIDIA device plugin. Not needed on Kubernetes >= 1.35 with the `DRAExtendedResource` feature gate enabled.
+
+```yaml
+interceptExtendedResources:
+  - resourceName: "nvidia.com/gpu"
+    deviceClassName: "gpu.nvidia.com"
+```
+
+GPU-NIC pair requests and intercepted resource requests are **mutually exclusive** — a pod requesting both is denied.
 
 ### Ethernet (default)
 
@@ -140,9 +165,16 @@ kubectl apply -k deploy/overlays/aks-ndv5/
 
 Create new overlays by copying `aks-ndv5/` and updating the `configmap-patch.yaml` with your cluster's PCIe topology and transport settings.
 
-## Namespace Opt-In
+## Webhook Endpoints
 
-Only namespaces with the label `dra.llm-d.io/webhook-enabled: "true"` are processed. Pods in unlabeled namespaces pass through unchanged.
+The webhook serves two endpoints via a single `MutatingWebhookConfiguration`:
+
+| Endpoint | Namespace Scope | Processes | Failure Policy |
+|----------|----------------|-----------|---------------|
+| `/mutate` | Namespaces labeled `dra.llm-d.io/webhook-enabled: "true"` | `gpu-nic-pair` + intercepted resources (mutually exclusive) | Fail |
+| `/mutate-ext` | All namespaces except `kube-system`, `openshift-*`, `nvidia-*` | Intercepted resources only, ignores `gpu-nic-pair` | Ignore |
+
+`/mutate` provides the full feature set for namespaces that opt in. `/mutate-ext` ensures extended resource interception works cluster-wide without requiring namespace labels. If `/mutate-ext` is unavailable (webhook down), pods pass through to the device plugin (`failurePolicy: Ignore`).
 
 ## CI
 
