@@ -584,45 +584,6 @@ func buildMutatedAnnotationPatch(pod *corev1.Pod) []jsonPatchOp {
 	}}
 }
 
-// buildSeparateClaimsPatch creates the JSON patch for N separate ResourceClaims
-// (one per GPU-NIC pair) and adds a nodeAffinity to pin the pod to the
-// allocator-selected node. Preserved for backward compatibility.
-func buildSeparateClaimsPatch(pod *corev1.Pod, count int, templateNames []string, nodeName string, containerIndices []int, requestNames []string) ([]byte, error) {
-	var patches []jsonPatchOp
-
-	// 1. Remove synthetic resource
-	patches = append(patches, buildResourceRemovalPatches(pod, containerIndices, ResourceGPUNICPair)...)
-
-	// 2. Add pod-level claims
-	podClaims := make([]corev1.PodResourceClaim, count)
-	for i := 0; i < count; i++ {
-		podClaims[i] = corev1.PodResourceClaim{
-			Name:                      fmt.Sprintf("gpu-nic-pair-%d", i),
-			ResourceClaimTemplateName: strPtr(templateNames[i]),
-		}
-	}
-	patches = append(patches, buildPodClaimPatches(pod, podClaims, true)...)
-
-	// 3. Add container claim refs — all pairs go to all requesting containers
-	for _, idx := range containerIndices {
-		refs := make([]corev1.ResourceClaim, 0, count*len(requestNames))
-		for i := 0; i < count; i++ {
-			claimName := fmt.Sprintf("gpu-nic-pair-%d", i)
-			for _, reqName := range requestNames {
-				refs = append(refs, corev1.ResourceClaim{Name: claimName, Request: reqName})
-			}
-		}
-		patches = append(patches, buildContainerClaimRefPatches(pod, idx, refs, true)...)
-	}
-
-	// 4. Node affinity
-	patches = append(patches, buildNodeAffinityPatch(pod, nodeName)...)
-
-	// 5. Mutated annotation
-	patches = append(patches, buildMutatedAnnotationPatch(pod)...)
-
-	return json.Marshal(patches)
-}
 
 // escapeJSONPointer escapes a string for use in a JSON Pointer (RFC 6901).
 // '~' becomes '~0', '/' becomes '~1'.
