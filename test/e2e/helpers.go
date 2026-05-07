@@ -459,6 +459,108 @@ func AssertNUMALocality(t *testing.T, f *Framework, claimName string) {
 	t.Logf("Verified %d NICs allocated in claim %s (NUMA locality enforced by matchAttribute constraint)", nicCount, claimName)
 }
 
+// NvidiaGPUPod creates a pod requesting N nvidia.com/gpu extended resources.
+func NvidiaGPUPod(name string, count int) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+		},
+		Spec: corev1.PodSpec{
+			RestartPolicy: corev1.RestartPolicyNever,
+			Tolerations: []corev1.Toleration{
+				{
+					Key:      "nvidia.com/gpu",
+					Operator: corev1.TolerationOpExists,
+					Effect:   corev1.TaintEffectNoSchedule,
+				},
+			},
+			Containers: []corev1.Container{
+				{
+					Name:  "test",
+					Image: "registry.k8s.io/pause:3.10",
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceName(webhook.ResourceNvidiaGPU): resource.MustParse(fmt.Sprintf("%d", count)),
+						},
+						Limits: corev1.ResourceList{
+							corev1.ResourceName(webhook.ResourceNvidiaGPU): resource.MustParse(fmt.Sprintf("%d", count)),
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// MixedResourcePod creates a pod requesting both gpu-nic-pairs and nvidia.com/gpu.
+func MixedResourcePod(name string, pairCount, gpuCount int) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+		},
+		Spec: corev1.PodSpec{
+			RestartPolicy: corev1.RestartPolicyNever,
+			Tolerations: []corev1.Toleration{
+				{
+					Key:      "nvidia.com/gpu",
+					Operator: corev1.TolerationOpExists,
+					Effect:   corev1.TaintEffectNoSchedule,
+				},
+			},
+			Containers: []corev1.Container{
+				{
+					Name:  "test",
+					Image: "registry.k8s.io/pause:3.10",
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceName(webhook.ResourceGPUNICPair): resource.MustParse(fmt.Sprintf("%d", pairCount)),
+							corev1.ResourceName(webhook.ResourceNvidiaGPU):  resource.MustParse(fmt.Sprintf("%d", gpuCount)),
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// AssertInterceptedResourceStripped checks that the intercepted resource is gone from requests.
+func AssertInterceptedResourceStripped(t *testing.T, pod *corev1.Pod, resourceName string) {
+	t.Helper()
+	for i, c := range pod.Spec.Containers {
+		if c.Resources.Requests != nil {
+			if _, ok := c.Resources.Requests[corev1.ResourceName(resourceName)]; ok {
+				t.Errorf("container %d still has %s in requests", i, resourceName)
+			}
+		}
+		if c.Resources.Limits != nil {
+			if _, ok := c.Resources.Limits[corev1.ResourceName(resourceName)]; ok {
+				t.Errorf("container %d still has %s in limits", i, resourceName)
+			}
+		}
+	}
+}
+
+// EnableInterception patches the webhook ConfigMap to enable extended resource
+// interception and restarts the webhook deployment.
+func EnableInterception(t *testing.T, f *Framework, resources []map[string]interface{}) {
+	t.Helper()
+	PatchWebhookConfig(t, f, map[string]interface{}{
+		"interceptExtendedResources": resources,
+	})
+	RestartAndWait(t, f, f.WebhookNS, webhookDeployment, 120*time.Second)
+	t.Log("Webhook restarted with interception enabled")
+}
+
+// DisableInterception removes the interception config and restarts the webhook.
+func DisableInterception(t *testing.T, f *Framework) {
+	t.Helper()
+	PatchWebhookConfig(t, f, map[string]interface{}{
+		"interceptExtendedResources": []interface{}{},
+	})
+	RestartAndWait(t, f, f.WebhookNS, webhookDeployment, 120*time.Second)
+	t.Log("Webhook restarted with interception disabled")
+}
+
 // ---------- Cleanup ----------
 
 // CleanupAllPods deletes all pods in the framework namespace and waits for
