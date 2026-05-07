@@ -1057,6 +1057,91 @@ func TestExtractInterceptedResources_NilMap(t *testing.T) {
 	}
 }
 
+func TestMutateExtOnly_IgnoresGPUNICPair(t *testing.T) {
+	cfg := testConfigWithRails()
+	cfg.InterceptExtendedResources = []ExtendedResourceInterception{
+		{ResourceName: ResourceNvidiaGPU, DeviceClassName: "gpu.nvidia.com"},
+	}
+	m := newTestMutatorWithGPUs(cfg, 8)
+
+	pod := podWithGPUNICPairs(2)
+	patch, err := m.MutateExtOnly(context.Background(), pod, "default")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if patch != nil {
+		t.Error("MutateExtOnly should return nil patch for gpu-nic-pair pods")
+	}
+}
+
+func TestMutateExtOnly_InterceptsExtendedResource(t *testing.T) {
+	cfg := testConfigWithRails()
+	cfg.InterceptExtendedResources = []ExtendedResourceInterception{
+		{ResourceName: ResourceNvidiaGPU, DeviceClassName: "gpu.nvidia.com"},
+	}
+	m := newTestMutatorWithGPUs(cfg, 8)
+
+	pod := podWithNvidiaGPU(2)
+	patch, err := m.MutateExtOnly(context.Background(), pod, "default")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if patch == nil {
+		t.Fatal("expected patch from MutateExtOnly for nvidia.com/gpu pod")
+	}
+
+	var ops []jsonPatchOp
+	if err := json.Unmarshal(patch, &ops); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	hasRemove := false
+	for _, op := range ops {
+		if op.Op == "remove" && contains(op.Path, "nvidia.com~1gpu") {
+			hasRemove = true
+		}
+	}
+	if !hasRemove {
+		t.Error("missing remove op for nvidia.com/gpu")
+	}
+}
+
+func TestMutateExtOnly_DoesNotDenyMixedPod(t *testing.T) {
+	cfg := testConfigWithRails()
+	cfg.InterceptExtendedResources = []ExtendedResourceInterception{
+		{ResourceName: ResourceNvidiaGPU, DeviceClassName: "gpu.nvidia.com"},
+	}
+	m := newTestMutatorWithGPUs(cfg, 8)
+
+	// Pod with both resources — MutateExtOnly should only see the intercepted
+	// resource and ignore the gpu-nic-pair. No denial.
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "mixed", Namespace: "default"},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:  "workload",
+					Image: "nvidia/cuda:12.3.0-base-ubuntu22.04",
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceName(ResourceGPUNICPair): resource.MustParse("2"),
+							corev1.ResourceName(ResourceNvidiaGPU):  resource.MustParse("1"),
+						},
+					},
+				},
+			},
+		},
+	}
+
+	patch, err := m.MutateExtOnly(context.Background(), pod, "default")
+	if err != nil {
+		t.Fatalf("MutateExtOnly should not deny mixed pod: %v", err)
+	}
+	if patch == nil {
+		t.Fatal("expected patch for intercepted resource in mixed pod")
+	}
+}
+
 // contains checks if substr is in s.
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(substr) == 0 || searchString(s, substr))

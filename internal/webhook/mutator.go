@@ -270,6 +270,108 @@ func (m *Mutator) Mutate(ctx context.Context, pod *corev1.Pod, namespace string)
 	return json.Marshal(allPatches)
 }
 
+// MutateExtOnly processes a pod for intercepted extended resources only.
+// It ignores gpu-nic-pair requests. Used by the /mutate-ext endpoint which
+// serves all non-system namespaces.
+func (m *Mutator) MutateExtOnly(ctx context.Context, pod *corev1.Pod, namespace string) ([]byte, error) {
+	if pod.Annotations != nil && pod.Annotations[AnnotationMutated] == "true" {
+		return nil, nil
+	}
+
+	interceptMap := m.Config.InterceptedResourceMap()
+	interceptedReqs, err := extractInterceptedResources(pod, interceptMap)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(interceptedReqs) == 0 {
+		return nil, nil
+	}
+
+	if m.Allocator == nil {
+		return nil, fmt.Errorf("allocator not configured")
+	}
+
+	var allPatches []jsonPatchOp
+	var selectedNode string
+	firstPodClaim := true
+	containerClaimRefAdded := make(map[int]bool)
+
+	for _, req := range interceptedReqs {
+		totalCount := req.TotalCount()
+		if totalCount <= 0 {
+			continue
+		}
+
+		nodeName, err := m.Allocator.AllocateExtendedResource(ctx, pod, namespace, totalCount, req.DeviceClassName, selectedNode)
+		if err != nil {
+			return nil, fmt.Errorf("extended resource allocation failed for %s: %w", req.ResourceName, err)
+		}
+		if selectedNode == "" {
+			selectedNode = nodeName
+		}
+
+		templateNames := make([]string, totalCount)
+		for i := 0; i < totalCount; i++ {
+			spec := BuildExtendedResourceClaimSpec(req.DeviceClassName)
+			name := ExtendedResourceTemplateName(i, req.DeviceClassName, m.Config)
+			if err := m.ensureClaimTemplate(ctx, namespace, name, spec); err != nil {
+				return nil, fmt.Errorf("failed to ensure extended resource template %d: %w", i, err)
+			}
+			templateNames[i] = name
+		}
+
+		klog.InfoS("Mutating pod (extended resource interception)", "namespace", namespace,
+			"pod", podName(pod), "resource", req.ResourceName,
+			"deviceClass", req.DeviceClassName, "count", totalCount,
+			"node", nodeName, "templates", templateNames)
+
+		containerIndices := make([]int, len(req.PerContainer))
+		for i, pc := range req.PerContainer {
+			containerIndices[i] = pc.ContainerIndex
+		}
+		allPatches = append(allPatches, buildResourceRemovalPatches(pod, containerIndices, req.ResourceName)...)
+
+		existingNames := make(map[string]bool)
+		for _, rc := range pod.Spec.ResourceClaims {
+			existingNames[rc.Name] = true
+		}
+		podClaims := make([]corev1.PodResourceClaim, totalCount)
+		for i := 0; i < totalCount; i++ {
+			claimName := fmt.Sprintf("ext-%s-%d", escapeClaimName(req.ResourceName), i)
+			for existingNames[claimName] {
+				claimName = claimName + "-x"
+			}
+			existingNames[claimName] = true
+			podClaims[i] = corev1.PodResourceClaim{
+				Name:                      claimName,
+				ResourceClaimTemplateName: strPtr(templateNames[i]),
+			}
+		}
+		allPatches = append(allPatches, buildPodClaimPatches(pod, podClaims, firstPodClaim)...)
+		firstPodClaim = false
+
+		claimOffset := 0
+		for _, pc := range req.PerContainer {
+			refs := make([]corev1.ResourceClaim, pc.Count)
+			for j := 0; j < pc.Count; j++ {
+				refs[j] = corev1.ResourceClaim{
+					Name:    podClaims[claimOffset+j].Name,
+					Request: "device",
+				}
+			}
+			allPatches = append(allPatches, buildContainerClaimRefPatches(pod, pc.ContainerIndex, refs, !containerClaimRefAdded[pc.ContainerIndex])...)
+			containerClaimRefAdded[pc.ContainerIndex] = true
+			claimOffset += pc.Count
+		}
+	}
+
+	allPatches = append(allPatches, buildNodeAffinityPatch(pod, selectedNode)...)
+	allPatches = append(allPatches, buildMutatedAnnotationPatch(pod)...)
+
+	return json.Marshal(allPatches)
+}
+
 // escapeClaimName makes a resource name safe for use in claim names.
 // Replaces '/' and '.' with '-'.
 func escapeClaimName(name string) string {

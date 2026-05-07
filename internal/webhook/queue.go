@@ -10,12 +10,16 @@ import (
 	"k8s.io/klog/v2"
 )
 
+// MutateFunc is a function that mutates a pod and returns a JSON patch.
+type MutateFunc func(ctx context.Context, pod *corev1.Pod, namespace string) ([]byte, error)
+
 // mutationRequest represents a queued pod mutation.
 type mutationRequest struct {
 	ctx       context.Context
 	pod       *corev1.Pod
 	namespace string
 	count     int // GPU-NIC pair count, used as priority (higher = first)
+	mutateFn  MutateFunc
 	resultCh  chan<- mutationResult
 }
 
@@ -56,14 +60,20 @@ func NewMutationQueue(mutator *Mutator, debounce time.Duration) *MutationQueue {
 }
 
 // Enqueue adds a mutation request to the queue and blocks until it is processed.
-// Returns the JSON patch and any error from the mutation.
+// Uses the default Mutator.Mutate function.
 func (q *MutationQueue) Enqueue(ctx context.Context, pod *corev1.Pod, namespace string, count int) ([]byte, error) {
+	return q.EnqueueFunc(ctx, pod, namespace, count, q.mutator.Mutate)
+}
+
+// EnqueueFunc adds a mutation request with a custom mutation function.
+func (q *MutationQueue) EnqueueFunc(ctx context.Context, pod *corev1.Pod, namespace string, count int, fn MutateFunc) ([]byte, error) {
 	ch := make(chan mutationResult, 1)
 	req := &mutationRequest{
 		ctx:       ctx,
 		pod:       pod,
 		namespace: namespace,
 		count:     count,
+		mutateFn:  fn,
 		resultCh:  ch,
 	}
 
@@ -120,9 +130,9 @@ func (q *MutationQueue) processBatch() {
 			"batchSize", len(batch),
 			"priorities", batchCounts(batch))
 
-		// Process serially — each Mutate() creates templates visible to the next
+		// Process serially — each mutation creates templates visible to the next
 		for _, req := range batch {
-			patch, err := q.mutator.Mutate(req.ctx, req.pod, req.namespace)
+			patch, err := req.mutateFn(req.ctx, req.pod, req.namespace)
 			req.resultCh <- mutationResult{patch: patch, err: err}
 		}
 	}

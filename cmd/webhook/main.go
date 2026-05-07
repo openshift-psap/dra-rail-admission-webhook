@@ -111,8 +111,12 @@ func main() {
 	// rails and anti-affinity is correctly evaluated across the batch.
 	queue := webhook.NewMutationQueue(mutator, 3*time.Second)
 
-	// Create handler
+	// Create handlers
 	handler := &webhook.Handler{
+		Mutator: mutator,
+		Queue:   queue,
+	}
+	extHandler := &webhook.ExtHandler{
 		Mutator: mutator,
 		Queue:   queue,
 	}
@@ -120,6 +124,7 @@ func main() {
 	// Set up HTTP server
 	mux := http.NewServeMux()
 	mux.Handle(webhook.MutatePath, handler)
+	mux.Handle(webhook.MutateExtPath, extHandler)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
