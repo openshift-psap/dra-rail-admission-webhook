@@ -7,6 +7,8 @@ metadata:
     app: dra-gpu-nic-webhook
 spec:
   replicas: 2
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: dra-gpu-nic-webhook

@@ -133,10 +133,21 @@ func RestartDeployment(t *testing.T, f *Framework, namespace, name string) {
 }
 
 // RestartAndWait restarts a deployment and waits for it to become ready.
+// With Recreate strategy, old pods are killed first. We wait for ready
+// replicas to drop to 0, then wait for the new pod to come up.
 func RestartAndWait(t *testing.T, f *Framework, namespace, name string, timeout time.Duration) {
 	t.Helper()
 	RestartDeployment(t, f, namespace, name)
-	// Brief pause to allow rollout to begin
-	time.Sleep(3 * time.Second)
+
+	// Wait for old pod to terminate (ReadyReplicas drops to 0)
+	WaitForCondition(t, timeout, fmt.Sprintf("deployment %s/%s to drain old pods", namespace, name), func() bool {
+		dep, err := f.KubeClient.AppsV1().Deployments(namespace).Get(context.Background(), name, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+		return dep.Status.ReadyReplicas == 0
+	})
+
+	// Wait for new pod to become ready
 	WaitForDeploymentReady(t, f, namespace, name, timeout)
 }
