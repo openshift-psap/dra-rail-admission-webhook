@@ -69,7 +69,32 @@ For GPU-NIC pair support, label namespaces that should use the webhook:
 kubectl label namespace my-namespace dra.llm-d.io/webhook-enabled=true
 ```
 
-Extended resource interception via `/mutate-ext` works on all non-system namespaces without labeling.
+### Extended resource interception
+
+To intercept legacy extended resources (e.g., `nvidia.com/gpu`) and convert them to DRA ResourceClaims, enable interception at install or upgrade:
+
+```bash
+# At install time
+helm install dra charts/dra-admission-webhook/ -n dra-webhook-system --create-namespace \
+  --set 'webhookConfig.interceptExtendedResources[0].resourceName=nvidia.com/gpu' \
+  --set 'webhookConfig.interceptExtendedResources[0].deviceClassName=gpu.nvidia.com'
+
+# Or via upgrade on an existing release
+helm upgrade dra charts/dra-admission-webhook/ -n dra-webhook-system \
+  --set 'webhookConfig.interceptExtendedResources[0].resourceName=nvidia.com/gpu' \
+  --set 'webhookConfig.interceptExtendedResources[0].deviceClassName=gpu.nvidia.com'
+```
+
+Or in a values file:
+
+```yaml
+webhookConfig:
+  interceptExtendedResources:
+    - resourceName: "nvidia.com/gpu"
+      deviceClassName: "gpu.nvidia.com"
+```
+
+When enabled, the `/mutate-ext` endpoint intercepts pod creates across all non-system namespaces (no labeling required). The webhook strips the extended resource from the container spec and replaces it with a DRA ResourceClaim. Not needed on Kubernetes >= 1.35 with the `DRAExtendedResource` feature gate.
 
 ### Kustomize (DEPRECATED)
 

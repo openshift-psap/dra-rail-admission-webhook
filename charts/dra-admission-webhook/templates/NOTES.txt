@@ -1,15 +1,50 @@
 DRA Admission Webhook installed.
 
-Namespace: {{ include "dra-admission-webhook.namespace" . }}
-Webhook:   {{ .Values.webhook.replicas }} replica(s) on :{{ .Values.webhook.port }}
+Namespace:  {{ include "dra-admission-webhook.namespace" . }}
+Webhook:    {{ .Values.webhook.replicas }} replica(s) on :{{ .Values.webhook.port }}
 Reconciler: {{ .Values.reconciler.replicas }} replica(s)
-TLS mode:  {{ .Values.tls.mode }}
+TLS mode:   {{ .Values.tls.mode }}
+{{- if .Values.webhookConfig.interceptExtendedResources }}
+Intercept:  {{ range .Values.webhookConfig.interceptExtendedResources }}{{ .resourceName }} -> {{ .deviceClassName }}{{ end }}
+{{- else }}
+Intercept:  disabled (enable with --set 'webhookConfig.interceptExtendedResources[0].resourceName=nvidia.com/gpu' --set 'webhookConfig.interceptExtendedResources[0].deviceClassName=gpu.nvidia.com')
+{{- end }}
 
 Verify readiness:
   kubectl get pods -n {{ include "dra-admission-webhook.namespace" . }}
   kubectl get mutatingwebhookconfigurations {{ include "dra-admission-webhook.fullname" . }}
 
-Test mutation:
-  kubectl label namespace default dra.llm-d.io/webhook-enabled=true
-  kubectl run test --image=busybox --dry-run=server -o yaml \
-    --overrides='{"spec":{"containers":[{"name":"test","image":"busybox","resources":{"limits":{"dra.llm-d.io/gpu-nic-pair":"1"}}}]}}'
+GPU-NIC pair mode (requires namespace label):
+  kubectl label namespace <ns> dra.llm-d.io/webhook-enabled=true
+  kubectl apply -n <ns> -f - <<EOF
+  apiVersion: v1
+  kind: Pod
+  metadata:
+    name: test-synthetic
+  spec:
+    containers:
+    - name: test
+      image: busybox
+      command: ["sleep", "3600"]
+      resources:
+        limits:
+          dra.llm-d.io/gpu-nic-pair: "1"
+  EOF
+{{- if .Values.webhookConfig.interceptExtendedResources }}
+
+Extended resource intercept mode (works on all non-system namespaces):
+  kubectl apply -n <ns> -f - <<EOF
+  apiVersion: v1
+  kind: Pod
+  metadata:
+    name: test-intercept
+  spec:
+    containers:
+    - name: test
+      image: busybox
+      command: ["sleep", "3600"]
+      resources:
+        limits:
+          {{ (index .Values.webhookConfig.interceptExtendedResources 0).resourceName }}: "1"
+  EOF
+{{- end }}

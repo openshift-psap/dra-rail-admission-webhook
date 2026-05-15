@@ -114,6 +114,17 @@ webhookConfig:
       - subnet: "10.7.0.0/16"
         gateway: "10.7.0.1"
         ipv4Prefix: "10.7."
+  # Enable extended resource interception to convert legacy resource requests
+  # (e.g., nvidia.com/gpu) into DRA ResourceClaims. The webhook strips the
+  # extended resource from the pod spec and creates a DRA claim instead.
+  # Works cluster-wide via /mutate-ext without namespace labeling.
+  # Not needed on K8s >= 1.35 with DRAExtendedResource feature gate.
+  #
+  # To enable:
+  #   helm install dra charts/dra-admission-webhook/ \
+  #     --set 'webhookConfig.interceptExtendedResources[0].resourceName=nvidia.com/gpu' \
+  #     --set 'webhookConfig.interceptExtendedResources[0].deviceClassName=gpu.nvidia.com'
+  #
   # interceptExtendedResources:
   #   - resourceName: "nvidia.com/gpu"
   #     deviceClassName: "gpu.nvidia.com"
