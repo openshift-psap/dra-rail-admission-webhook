@@ -1,0 +1,88 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "dra-admission-webhook.fullname" . }}-reconciler
+  namespace: {{ include "dra-admission-webhook.namespace" . }}
+  labels:
+    {{- include "dra-admission-webhook.reconcilerLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.reconciler.replicas }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "dra-admission-webhook.reconcilerSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "dra-admission-webhook.reconcilerSelectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "dra-admission-webhook.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+      - name: reconciler
+        image: {{ include "dra-admission-webhook.reconcilerImage" . }}
+        imagePullPolicy: {{ .Values.reconciler.image.pullPolicy }}
+        args:
+        - --config-namespace={{ include "dra-admission-webhook.namespace" . }}
+        - --config-name={{ include "dra-admission-webhook.configmapName" . }}
+        - --health-port={{ .Values.reconciler.healthPort }}
+        {{- range .Values.reconciler.extraArgs }}
+        - {{ . }}
+        {{- end }}
+        ports:
+        - containerPort: {{ .Values.reconciler.healthPort }}
+          name: health
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: {{ .Values.reconciler.healthPort }}
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: {{ .Values.reconciler.healthPort }}
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        {{- if .Values.reconcilerPvc.enabled }}
+        volumeMounts:
+        - name: state
+          mountPath: /data
+        {{- end }}
+        resources:
+          {{- toYaml .Values.reconciler.resources | nindent 10 }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          capabilities:
+            drop:
+            - ALL
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.reconcilerPvc.enabled }}
+      volumes:
+      - name: state
+        persistentVolumeClaim:
+          claimName: {{ include "dra-admission-webhook.fullname" . }}-reconciler-state
+      {{- end }}

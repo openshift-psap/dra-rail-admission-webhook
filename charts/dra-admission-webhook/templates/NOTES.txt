@@ -1,0 +1,15 @@
+DRA Admission Webhook installed.
+
+Namespace: {{ include "dra-admission-webhook.namespace" . }}
+Webhook:   {{ .Values.webhook.replicas }} replica(s) on :{{ .Values.webhook.port }}
+Reconciler: {{ .Values.reconciler.replicas }} replica(s)
+TLS mode:  {{ .Values.tls.mode }}
+
+Verify readiness:
+  kubectl get pods -n {{ include "dra-admission-webhook.namespace" . }}
+  kubectl get mutatingwebhookconfigurations {{ include "dra-admission-webhook.fullname" . }}
+
+Test mutation:
+  kubectl label namespace default dra.llm-d.io/webhook-enabled=true
+  kubectl run test --image=busybox --dry-run=server -o yaml \
+    --overrides='{"spec":{"containers":[{"name":"test","image":"busybox","resources":{"limits":{"dra.llm-d.io/gpu-nic-pair":"1"}}}]}}'

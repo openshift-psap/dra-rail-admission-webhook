@@ -1,0 +1,70 @@
+# PSAP RDU4 B200 cluster — explicit pairing mode with PCI device mappings
+webhookConfig:
+  maxPairsPerNUMA: 4
+  maxPairsPerNode: 8
+  gpuDeviceClassName: gpu.nvidia.com
+  nicDeviceClassName: dranet
+  preflightCheck: false
+  nicConfig:
+    mtu: 9000
+    rdmaRequired: true
+    interfacePrefix: "net"
+    startingTableId: 100
+    crossRailCIDR: ""
+    rails: []
+  pairingMode: explicit
+  pairingConfig:
+    deviceSelectors:
+      gpu:
+        deviceClassName: gpu.nvidia.com
+        attributeDomain: resource.kubernetes.io
+        attributeName: pciBusID
+      nic:
+        deviceClassName: dranet
+        driverName: dra.net
+        attributeDomain: dra.net
+        attributeName: pciAddress
+    nodePoolLabelKey: nvidia.com/gpu.product
+    nodePools:
+      - nodePoolLabel: NVIDIA-B200
+        pairs:
+          - devices:
+              gpu: "0000:1b:00.0"
+              nic: "0000:18:00.0"
+            rail: 0
+            numa: 0
+          - devices:
+              gpu: "0000:3c:00.0"
+              nic: "0000:3a:00.0"
+            rail: 1
+            numa: 0
+          - devices:
+              gpu: "0000:4b:00.0"
+              nic: "0000:4d:00.0"
+            rail: 2
+            numa: 0
+          - devices:
+              gpu: "0000:5c:00.0"
+              nic: "0000:5d:00.0"
+            rail: 3
+            numa: 0
+          - devices:
+              gpu: "0000:9a:00.0"
+              nic: "0000:9b:00.0"
+            rail: 4
+            numa: 1
+          - devices:
+              gpu: "0000:bb:00.0"
+              nic: "0000:ba:00.0"
+            rail: 5
+            numa: 1
+          - devices:
+              gpu: "0000:cd:00.0"
+              nic: "0000:ca:00.0"
+            rail: 6
+            numa: 1
+          - devices:
+              gpu: "0000:dc:00.0"
+              nic: "0000:db:00.0"
+            rail: 7
+            numa: 1

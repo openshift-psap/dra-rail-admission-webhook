@@ -1,0 +1,18 @@
+{{- if eq .Values.tls.mode "cert-manager" }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "dra-admission-webhook.fullname" . }}-tls
+  namespace: {{ include "dra-admission-webhook.namespace" . }}
+  labels:
+    {{- include "dra-admission-webhook.labels" . | nindent 4 }}
+spec:
+  secretName: {{ include "dra-admission-webhook.tlsSecretName" . }}
+  duration: {{ .Values.tls.certManager.duration }}
+  renewBefore: {{ .Values.tls.certManager.renewBefore }}
+  dnsNames:
+    - {{ include "dra-admission-webhook.serviceName" . }}.{{ include "dra-admission-webhook.namespace" . }}.svc
+    - {{ include "dra-admission-webhook.serviceName" . }}.{{ include "dra-admission-webhook.namespace" . }}.svc.cluster.local
+  issuerRef:
+    {{- toYaml .Values.tls.certManager.issuerRef | nindent 4 }}
+{{- end }}
