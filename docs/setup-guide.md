@@ -4,7 +4,7 @@
 
 - Kubernetes 1.34.2+ with DRA enabled
 - GPU and NIC DRA drivers installed (e.g., `gpu.nvidia.com`, `dranet` v1.2.0+)
-- `cert-manager` or manually generated TLS certificates
+- Helm 3.x (for deployment)
 - Go 1.25+ (for building from source)
 
 ## Build
@@ -17,44 +17,49 @@ make test           # Run unit tests
 
 ## Deployment
 
-### Base deployment (Ethernet defaults)
+### Helm (preferred)
 
-Generate TLS certificates and deploy all components:
-
-```bash
-make deploy NAMESPACE=dra-webhook-system
-```
-
-This creates:
-- TLS certificates (self-signed CA)
-- `MutatingWebhookConfiguration` with both `/mutate` and `/mutate-ext` endpoints
-- Webhook deployment (Recreate strategy)
-- Reconciler deployment
-- ConfigMap with default Ethernet configuration
-- RBAC (ClusterRole, ClusterRoleBinding, ServiceAccount)
-
-### Kustomize overlays
-
-For cluster-specific configuration (images, transport, rails, replicas), use a kustomize overlay:
-
-```text
-deploy/
-  base/                    # Canonical manifests
-  overlays/
-    aks-ndv5/              # AKS ND96isr_H100_v5 (InfiniBand)
-      kustomization.yaml
-      webhook-patch.yaml   # Image + replicas
-      reconciler-patch.yaml
-      configmap-patch.yaml # IB transport + ibRails
-```
-
-Deploy an overlay:
+Install with default Ethernet configuration:
 
 ```bash
-kubectl apply -k deploy/overlays/aks-ndv5/
+helm install dra charts/dra-admission-webhook/ -n dra-webhook-system --create-namespace
 ```
 
-Create a new overlay by copying an existing one and updating `configmap-patch.yaml` with your cluster's PCIe topology and transport settings.
+This creates all components: webhook, reconciler, ConfigMap, RBAC, PVC, PDB, MutatingWebhookConfiguration, and self-signed TLS certificates. TLS and caBundle are handled automatically.
+
+For cluster-specific configuration, use a values file:
+
+```bash
+# AKS NDv5 (InfiniBand transport, reduced MTU)
+helm install dra charts/dra-admission-webhook/ \
+  -f charts/dra-admission-webhook/values-aks-ndv5.yaml \
+  -n dra-webhook-system --create-namespace
+
+# PSAP RDU4 B200 (explicit pairing with PCI device mappings)
+helm install dra charts/dra-admission-webhook/ \
+  -f charts/dra-admission-webhook/values-psap-rdu4-b200.yaml \
+  -n dra-webhook-system --create-namespace
+```
+
+Create a new values file by copying an existing one and updating `webhookConfig` with your cluster's PCIe topology and transport settings. See `charts/dra-admission-webhook/values.yaml` for all configurable fields.
+
+#### TLS modes
+
+The Helm chart supports three TLS modes (set via `tls.mode`):
+
+| Mode | Description |
+|------|-------------|
+| `helm-generated` (default) | Self-signed CA + cert, auto-injected caBundle, persists across upgrades |
+| `cert-manager` | Creates a Certificate CR, cainjector handles caBundle |
+| `manual` | User creates TLS secret externally, provides `tls.caBundle` in values |
+
+#### Upgrading
+
+```bash
+helm upgrade dra charts/dra-admission-webhook/ -n dra-webhook-system
+```
+
+ConfigMap changes trigger automatic pod restarts via config hash annotations.
 
 ### Namespace labeling
 
@@ -66,22 +71,21 @@ kubectl label namespace my-namespace dra.llm-d.io/webhook-enabled=true
 
 Extended resource interception via `/mutate-ext` works on all non-system namespaces without labeling.
 
-### caBundle per cluster
+### Kustomize (DEPRECATED)
 
-The `MutatingWebhookConfiguration` contains a `caBundle` field that must match the TLS certificate used by the webhook. When deploying to a new cluster:
+> **Kustomize deployment is deprecated and will be removed in the next release.** Migrate to the Helm chart above.
 
-1. `make deploy` generates cluster-specific certs and sets the caBundle automatically
-2. If applying base manifests manually, update `caBundle` in `deploy/base/webhook-config.yaml` to match your cluster's TLS secret:
+<details>
+<summary>Legacy kustomize instructions</summary>
 
 ```bash
-CABUNDLE=$(kubectl get secret dra-gpu-nic-webhook-tls -n dra-webhook-system -o jsonpath='{.data.tls\.crt}')
-kubectl patch mutatingwebhookconfiguration dra-gpu-nic-webhook --type=json -p "[
-  {\"op\":\"replace\",\"path\":\"/webhooks/0/clientConfig/caBundle\",\"value\":\"$CABUNDLE\"},
-  {\"op\":\"replace\",\"path\":\"/webhooks/1/clientConfig/caBundle\",\"value\":\"$CABUNDLE\"}
-]"
+make deploy NAMESPACE=dra-webhook-system
+kubectl apply -k deploy/overlays/aks-ndv5/
 ```
 
-Both webhook entries (`/mutate` and `/mutate-ext`) must use the same caBundle.
+When using kustomize, TLS certificates must be generated manually via `make generate-certs` and the caBundle must be pasted into `deploy/base/webhook-config.yaml`.
+
+</details>
 
 ---
 
@@ -109,7 +113,15 @@ systemctl restart crio
 
 ## Configuration Changes
 
-The webhook loads its ConfigMap at startup and does not watch for changes. After updating the ConfigMap, restart the webhook:
+The webhook loads its ConfigMap at startup and does not watch for changes.
+
+**Helm (preferred):** Update `webhookConfig` in your values file and run `helm upgrade`. The config hash annotation triggers an automatic pod restart.
+
+```bash
+helm upgrade dra charts/dra-admission-webhook/ -n dra-webhook-system -f my-values.yaml
+```
+
+**Manual restart (kustomize or direct ConfigMap edits):**
 
 ```bash
 kubectl rollout restart deployment/dra-gpu-nic-webhook -n dra-webhook-system
