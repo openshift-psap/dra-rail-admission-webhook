@@ -373,6 +373,10 @@ func (a *Allocator) scanExplicitAvailability(ctx context.Context, poolMapping *N
 		driver := slice.Spec.Driver
 
 		for _, device := range slice.Spec.Devices {
+			if driver == "dra.net" && !a.Config.NICConfig.IsDeviceAllowed(device) {
+				continue
+			}
+
 			for role, sel := range a.Config.PairingConfig.DeviceSelectors {
 				if driver != sel.DriverName() {
 					continue
@@ -586,6 +590,10 @@ func (a *Allocator) scanEthernetSlots(ctx context.Context) (map[string][]NICSlot
 		}
 
 		for _, device := range slice.Spec.Devices {
+			if !a.Config.NICConfig.IsDeviceAllowed(device) {
+				continue
+			}
+
 			ipv4 := getIPv4(device)
 			if ipv4 == "" {
 				continue
@@ -656,6 +664,10 @@ func (a *Allocator) scanIBSlots(ctx context.Context) (map[string][]NICSlot, erro
 		}
 
 		for _, device := range slice.Spec.Devices {
+			if !a.Config.NICConfig.IsDeviceAllowed(device) {
+				continue
+			}
+
 			pciAddr := getPCIAddress(device)
 			if pciAddr == "" {
 				continue

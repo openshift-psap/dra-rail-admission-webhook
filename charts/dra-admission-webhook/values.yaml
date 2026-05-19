@@ -114,6 +114,27 @@ webhookConfig:
       - subnet: "10.7.0.0/16"
         gateway: "10.7.0.1"
         ipv4Prefix: "10.7."
+  # Filter NIC devices for GPU-NIC pairing. Include narrows the candidate
+  # set (omit = all devices). Exclude removes from the included set.
+  # A device matching ANY criterion within a filter is affected.
+  #
+  # includeDevices:
+  #   encapsulations:        # dra.net/encapsulation exact match
+  #     - "ether"
+  #   pciAddressPrefixes:    # dra.net/pciAddress prefix match
+  #     - "0000:18:"
+  #   ifNamePrefixes:        # dra.net/ifName prefix match
+  #     - "ens"
+  #   pcieRoots:             # resource.kubernetes.io/pcieRoot exact match
+  #     - "pci0000:15"
+  #   sriov: true            # dra.net/sriov boolean — true restricts to PFs
+  #
+  # excludeDevices:
+  #   encapsulations:
+  #     - "infiniband"
+  #   ifNamePrefixes:
+  #     - "mgmt"
+
   # Enable extended resource interception to convert legacy resource requests
   # (e.g., nvidia.com/gpu) into DRA ResourceClaims. The webhook strips the
   # extended resource from the pod spec and creates a DRA claim instead.

@@ -124,6 +124,10 @@ func (p *PreflightChecker) getIBClusterAvailability(ctx context.Context, cfg Con
 		nodeName := *slice.Spec.NodeName
 
 		for _, device := range slice.Spec.Devices {
+			if !cfg.NICConfig.IsDeviceAllowed(device) {
+				continue
+			}
+
 			pciAddr := getPCIAddress(device)
 			railIdx, ok := nicToRail[pciAddr]
 			if !ok {
@@ -221,6 +225,10 @@ func (p *PreflightChecker) getEthernetClusterAvailability(ctx context.Context, c
 		}
 
 		for _, device := range slice.Spec.Devices {
+			if !cfg.NICConfig.IsDeviceAllowed(device) {
+				continue
+			}
+
 			if !isNICAvailable(device, cfg) {
 				continue
 			}
@@ -397,6 +405,10 @@ func (p *PreflightChecker) findAvailableRails(ctx context.Context, count int, nu
 		}
 
 		for _, device := range slice.Spec.Devices {
+			if !cfg.NICConfig.IsDeviceAllowed(device) {
+				continue
+			}
+
 			if cfg.NICConfig.RDMARequired {
 				rdmaAttr, ok := device.Attributes[resourcev1.QualifiedName("dra.net/rdma")]
 				if !ok || rdmaAttr.BoolValue == nil || !*rdmaAttr.BoolValue {
@@ -554,6 +566,10 @@ func (p *PreflightChecker) CheckExplicitAvailability(ctx context.Context, count 
 		}
 
 		for _, device := range slice.Spec.Devices {
+			if slice.Spec.Driver == "dra.net" && !cfg.NICConfig.IsDeviceAllowed(device) {
+				continue
+			}
+
 			for role, sel := range cfg.PairingConfig.DeviceSelectors {
 				if slice.Spec.Driver != sel.DriverName() {
 					continue

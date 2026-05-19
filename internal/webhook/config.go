@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	resourcev1 "k8s.io/api/resource/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -90,6 +91,57 @@ type IBRailEntry struct {
 	NIC string `yaml:"nic"` // NIC PCI address (e.g., "0101:00:00.0")
 }
 
+// DeviceFilter defines criteria for matching NIC devices. A device matches
+// the filter if it satisfies ANY of the configured criteria (OR logic).
+// A nil filter matches everything. An empty filter (all fields zero) matches nothing.
+type DeviceFilter struct {
+	Encapsulations     []string `yaml:"encapsulations,omitempty"`
+	PCIAddressPrefixes []string `yaml:"pciAddressPrefixes,omitempty"`
+	IfNamePrefixes     []string `yaml:"ifNamePrefixes,omitempty"`
+	PCIeRoots          []string `yaml:"pcieRoots,omitempty"`
+	SRIOV              *bool    `yaml:"sriov,omitempty"`
+}
+
+// Matches returns true if the device matches any configured criterion.
+// Nil filter returns true (matches everything). Empty filter returns false.
+func (f *DeviceFilter) Matches(device resourcev1.Device) bool {
+	if f == nil {
+		return true
+	}
+
+	for _, enc := range f.Encapsulations {
+		if attr, ok := device.Attributes[resourcev1.QualifiedName(EncapsulationAttribute)]; ok && attr.StringValue != nil && *attr.StringValue == enc {
+			return true
+		}
+	}
+
+	for _, prefix := range f.PCIAddressPrefixes {
+		if attr, ok := device.Attributes[resourcev1.QualifiedName(NICPCIAddressAttribute)]; ok && attr.StringValue != nil && strings.HasPrefix(*attr.StringValue, prefix) {
+			return true
+		}
+	}
+
+	for _, prefix := range f.IfNamePrefixes {
+		if attr, ok := device.Attributes[resourcev1.QualifiedName(NICIfNameAttribute)]; ok && attr.StringValue != nil && strings.HasPrefix(*attr.StringValue, prefix) {
+			return true
+		}
+	}
+
+	for _, root := range f.PCIeRoots {
+		if attr, ok := device.Attributes[resourcev1.QualifiedName(PCIeRootAttribute)]; ok && attr.StringValue != nil && *attr.StringValue == root {
+			return true
+		}
+	}
+
+	if f.SRIOV != nil {
+		if attr, ok := device.Attributes[resourcev1.QualifiedName(NICSRIOVAttribute)]; ok && attr.BoolValue != nil && *attr.BoolValue == *f.SRIOV {
+			return true
+		}
+	}
+
+	return false
+}
+
 // NICConfig holds network interface configuration.
 type NICConfig struct {
 	MTU             int          `yaml:"mtu"`
@@ -101,6 +153,21 @@ type NICConfig struct {
 	Rails           []RailConfig  `yaml:"rails,omitempty"`
 	CrossRailCIDR   string        `yaml:"crossRailCIDR,omitempty"`
 	IBRails         []IBRailEntry `yaml:"ibRails,omitempty"`
+	IncludeDevices  *DeviceFilter `yaml:"includeDevices,omitempty"`
+	ExcludeDevices  *DeviceFilter `yaml:"excludeDevices,omitempty"`
+}
+
+// IsDeviceAllowed checks whether a device passes the include/exclude filters.
+// Include layer (nil = all pass, configured = must match).
+// Exclude layer (nil = nothing excluded, configured = matching devices dropped).
+func (nc *NICConfig) IsDeviceAllowed(device resourcev1.Device) bool {
+	if nc.IncludeDevices != nil && !nc.IncludeDevices.Matches(device) {
+		return false
+	}
+	if nc.ExcludeDevices != nil && nc.ExcludeDevices.Matches(device) {
+		return false
+	}
+	return true
 }
 
 // ExtendedResourceInterception defines an extended resource to intercept and
