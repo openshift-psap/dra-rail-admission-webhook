@@ -114,6 +114,20 @@ webhookConfig:
       - subnet: "10.7.0.0/16"
         gateway: "10.7.0.1"
         ipv4Prefix: "10.7."
+  # Gateway resolution mode. "static" (default) uses RailConfig.Gateway.
+  # "lookup" resolves per-node-per-rail from a lookup table, erroring if
+  # the node/rail is missing. Use for clusters with per-node gateways.
+  #
+  # gatewayResolution:
+  #   mode: static           # default — uses RailConfig.Gateway
+  #   # mode: lookup         # per-node-per-rail gateway table
+  #   # lookupTable:
+  #   #   "node-1":
+  #   #     0: "172.16.1.254"
+  #   #     1: "172.17.1.254"
+  #   #   "node-2":
+  #   #     0: "172.16.2.254"
+
   # Filter NIC devices for GPU-NIC pairing. Include narrows the candidate
   # set (omit = all devices). Exclude removes from the included set.
   # A device matching ANY criterion within a filter is affected.

@@ -121,7 +121,7 @@ func buildIBGPUSelectors(railIndex int, cfg Config) []resourcev1.DeviceSelector 
 // railIndices should be nil.
 // When numaConstrained is true, a matchAttribute constraint on dra.net/numaNode
 // is added across all NIC requests.
-func BuildClaimTemplateSpec(count int, numaConstrained bool, cfg Config, railIndices []int) (resourcev1.ResourceClaimSpec, error) {
+func BuildClaimTemplateSpec(count int, numaConstrained bool, cfg Config, railIndices []int, gateways ...string) (resourcev1.ResourceClaimSpec, error) {
 	requests := make([]resourcev1.DeviceRequest, 0, count*2)
 	constraints := make([]resourcev1.DeviceConstraint, 0, count+1)
 	configs := make([]resourcev1.DeviceClaimConfiguration, 0, count)
@@ -181,7 +181,13 @@ func BuildClaimTemplateSpec(count int, numaConstrained bool, cfg Config, railInd
 		}
 
 		// NIC opaque config
-		nicParams := buildNICParameters(i, railIdx, cfg)
+		gw := ""
+		if i < len(gateways) {
+			gw = gateways[i]
+		} else if railIdx >= 0 && railIdx < len(cfg.NICConfig.Rails) {
+			gw = cfg.NICConfig.Rails[railIdx].Gateway
+		}
+		nicParams := buildNICParameters(i, railIdx, cfg, gw)
 		paramsJSON, err := json.Marshal(nicParams)
 		if err != nil {
 			return resourcev1.ResourceClaimSpec{}, fmt.Errorf("failed to marshal NIC parameters for %s: %w", nicName, err)
@@ -221,7 +227,7 @@ func BuildClaimTemplateSpec(count int, numaConstrained bool, cfg Config, railInd
 // railIndex identifies which configured rail to use for routing (-1 means no rail).
 // The table ID is derived from the rail index so that policy routing tables
 // correspond to subnets, not NIC positions.
-func buildNICParameters(nicIndex int, railIndex int, cfg Config) NICParameters {
+func buildNICParameters(nicIndex int, railIndex int, cfg Config, gateway string) NICParameters {
 	params := NICParameters{
 		Interface: NICInterface{
 			Name: fmt.Sprintf("%s%d", cfg.NICConfig.InterfacePrefix, nicIndex),
@@ -255,19 +261,21 @@ func buildNICParameters(nicIndex int, railIndex int, cfg Config) NICParameters {
 		})
 
 		// Cross-rail supernet route
-		if cfg.NICConfig.CrossRailCIDR != "" {
+		if cfg.NICConfig.CrossRailCIDR != "" && gateway != "" {
 			params.Routes = append(params.Routes, Route{
 				Destination: cfg.NICConfig.CrossRailCIDR,
-				Gateway:     rail.Gateway,
+				Gateway:     gateway,
 			})
 		}
 
 		// Default route in policy table
-		params.Routes = append(params.Routes, Route{
-			Destination: "0.0.0.0/0",
-			Gateway:     rail.Gateway,
-			Table:       tableID,
-		})
+		if gateway != "" {
+			params.Routes = append(params.Routes, Route{
+				Destination: "0.0.0.0/0",
+				Gateway:     gateway,
+				Table:       tableID,
+			})
+		}
 	} else {
 		// Legacy flat routing (no rails)
 		tableID := cfg.NICConfig.StartingTableID + nicIndex
@@ -298,7 +306,7 @@ func buildNICParameters(nicIndex int, railIndex int, cfg Config) NICParameters {
 // BuildSinglePairClaimSpec builds a ResourceClaimSpec for one GPU+NIC pair.
 // nicIndex is the position (0, 1, ...) used for interface naming (net0, net1).
 // railIndex identifies which configured rail to use for routing and CEL selection.
-func BuildSinglePairClaimSpec(nicIndex int, railIndex int, cfg Config) (resourcev1.ResourceClaimSpec, error) {
+func BuildSinglePairClaimSpec(nicIndex int, railIndex int, cfg Config, gateway string) (resourcev1.ResourceClaimSpec, error) {
 	gpuReq := resourcev1.DeviceRequest{
 		Name: "gpu",
 		Exactly: &resourcev1.ExactDeviceRequest{
@@ -337,7 +345,7 @@ func BuildSinglePairClaimSpec(nicIndex int, railIndex int, cfg Config) (resource
 	}
 
 	// NIC opaque config
-	nicParams := buildNICParameters(nicIndex, railIndex, cfg)
+	nicParams := buildNICParameters(nicIndex, railIndex, cfg, gateway)
 	paramsJSON, err := json.Marshal(nicParams)
 	if err != nil {
 		return resourcev1.ResourceClaimSpec{}, fmt.Errorf("failed to marshal NIC parameters: %w", err)
@@ -389,7 +397,7 @@ func buildDevicePinSelector(sel DeviceSelectorConfig, value string) resourcev1.D
 // BuildExplicitPairClaimSpec builds a ResourceClaimSpec for one device set
 // where each device is pinned to an exact attribute value via CEL selectors.
 // No MatchAttribute constraint is used — the CEL selectors do the pinning.
-func BuildExplicitPairClaimSpec(nicIndex int, railIndex int, pair ExplicitPairMapping, cfg Config) (resourcev1.ResourceClaimSpec, error) {
+func BuildExplicitPairClaimSpec(nicIndex int, railIndex int, pair ExplicitPairMapping, cfg Config, gateway string) (resourcev1.ResourceClaimSpec, error) {
 	keys := cfg.DeviceSelectorKeys()
 
 	requests := make([]resourcev1.DeviceRequest, 0, len(keys))
@@ -415,7 +423,7 @@ func BuildExplicitPairClaimSpec(nicIndex int, railIndex int, pair ExplicitPairMa
 			nicSelectors := buildNICSelectors(railIndex, cfg)
 			selectors = append(selectors, nicSelectors...)
 
-			nicParams := buildNICParameters(nicIndex, railIndex, cfg)
+			nicParams := buildNICParameters(nicIndex, railIndex, cfg, gateway)
 			paramsJSON, err := json.Marshal(nicParams)
 			if err != nil {
 				return resourcev1.ResourceClaimSpec{}, fmt.Errorf("failed to marshal NIC parameters: %w", err)

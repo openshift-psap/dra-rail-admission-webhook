@@ -5,6 +5,13 @@ import (
 	"testing"
 )
 
+func testGateway(cfg Config, railIndex int) string {
+	if railIndex >= 0 && railIndex < len(cfg.NICConfig.Rails) {
+		return cfg.NICConfig.Rails[railIndex].Gateway
+	}
+	return ""
+}
+
 func testConfig() Config {
 	return Config{
 		MaxPairsPerNUMA:    4,
@@ -364,7 +371,7 @@ func TestBuildExplicitPairClaimSpec_GPUAndNICSelectors(t *testing.T) {
 	cfg := testExplicitConfig()
 	pair := cfg.PairingConfig.NodePools[0].Pairs[0]
 
-	spec, err := BuildExplicitPairClaimSpec(0, 0, pair, cfg)
+	spec, err := BuildExplicitPairClaimSpec(0, 0, pair, cfg, testGateway(cfg, 0))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -410,7 +417,7 @@ func TestBuildExplicitPairClaimSpec_NoMatchAttributeConstraint(t *testing.T) {
 	cfg := testExplicitConfig()
 	pair := cfg.PairingConfig.NodePools[0].Pairs[0]
 
-	spec, err := BuildExplicitPairClaimSpec(0, 0, pair, cfg)
+	spec, err := BuildExplicitPairClaimSpec(0, 0, pair, cfg, testGateway(cfg, 0))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -424,7 +431,7 @@ func TestBuildExplicitPairClaimSpec_NICParameters(t *testing.T) {
 	cfg := testExplicitConfig()
 	pair := cfg.PairingConfig.NodePools[0].Pairs[1]
 
-	spec, err := BuildExplicitPairClaimSpec(1, 1, pair, cfg)
+	spec, err := BuildExplicitPairClaimSpec(1, 1, pair, cfg, testGateway(cfg, 1))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -487,7 +494,7 @@ func TestBuildExplicitPairClaimSpec_ThreeDeviceRoles(t *testing.T) {
 		Rail: 0,
 	}
 
-	spec, err := BuildExplicitPairClaimSpec(0, 0, pair, cfg)
+	spec, err := BuildExplicitPairClaimSpec(0, 0, pair, cfg, testGateway(cfg, 0))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -574,7 +581,7 @@ func TestBuildExplicitPairClaimSpec_IBMCloudH100_SinglePair(t *testing.T) {
 	cfg := ibmCloudH100Config()
 	pair := cfg.PairingConfig.NodePools[0].Pairs[0] // gpu-7 ↔ enp163s0, rail 0
 
-	spec, err := BuildExplicitPairClaimSpec(0, 0, pair, cfg)
+	spec, err := BuildExplicitPairClaimSpec(0, 0, pair, cfg, testGateway(cfg, 0))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -645,7 +652,7 @@ func TestBuildExplicitPairClaimSpec_IBMCloudH100_NUMA1Pair(t *testing.T) {
 	cfg := ibmCloudH100Config()
 	pair := cfg.PairingConfig.NodePools[0].Pairs[7] // gpu-0 ↔ enp233s0, rail 7
 
-	spec, err := BuildExplicitPairClaimSpec(3, 7, pair, cfg)
+	spec, err := BuildExplicitPairClaimSpec(3, 7, pair, cfg, testGateway(cfg, 7))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -694,7 +701,7 @@ func TestBuildExplicitPairClaimSpec_IBMCloudH100_AllPairs(t *testing.T) {
 	// Build all 8 pairs and verify uniqueness
 	templateNames := make(map[string]bool)
 	for i, pair := range pool.Pairs {
-		spec, err := BuildExplicitPairClaimSpec(i, pair.Rail, pair, cfg)
+		spec, err := BuildExplicitPairClaimSpec(i, pair.Rail, pair, cfg, testGateway(cfg, pair.Rail))
 		if err != nil {
 			t.Fatalf("pair %d: unexpected error: %v", i, err)
 		}
@@ -727,7 +734,7 @@ func TestBuildExplicitPairClaimSpec_IBMCloudH100_CrossRailRouting(t *testing.T) 
 	cfg := ibmCloudH100Config()
 	pair := cfg.PairingConfig.NodePools[0].Pairs[2] // rail 2: 10.2.0.0/16
 
-	spec, err := BuildExplicitPairClaimSpec(0, 2, pair, cfg)
+	spec, err := BuildExplicitPairClaimSpec(0, 2, pair, cfg, testGateway(cfg, 2))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -843,7 +850,7 @@ func TestTemplateName_Deterministic(t *testing.T) {
 func TestBuildNICParameters_CrossRailCIDR(t *testing.T) {
 	cfg := testRailConfig()
 
-	params := buildNICParameters(0, 2, cfg)
+	params := buildNICParameters(0, 2, cfg, testGateway(cfg, 2))
 
 	if len(params.Routes) != 3 {
 		t.Fatalf("expected 3 routes, got %d", len(params.Routes))
@@ -866,7 +873,7 @@ func TestBuildNICParameters_EmptyCrossRailCIDR(t *testing.T) {
 	cfg := testRailConfig()
 	cfg.NICConfig.CrossRailCIDR = ""
 
-	params := buildNICParameters(0, 0, cfg)
+	params := buildNICParameters(0, 0, cfg, testGateway(cfg, 0))
 
 	if len(params.Routes) != 2 {
 		t.Fatalf("expected 2 routes (own-subnet + default), got %d", len(params.Routes))

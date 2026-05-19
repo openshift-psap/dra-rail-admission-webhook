@@ -706,6 +706,117 @@ nicConfig:
 	}
 }
 
+// --- NICConfig.ResolveGateway tests ---
+
+func TestResolveGateway_Static_Nil(t *testing.T) {
+	nc := &NICConfig{}
+	gw, err := nc.ResolveGateway("node-1", 0, "10.0.0.1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gw != "10.0.0.1" {
+		t.Errorf("gateway = %q, want 10.0.0.1", gw)
+	}
+}
+
+func TestResolveGateway_Static_Explicit(t *testing.T) {
+	nc := &NICConfig{GatewayResolution: &GatewayResolution{Mode: "static"}}
+	gw, err := nc.ResolveGateway("node-1", 0, "10.0.0.1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gw != "10.0.0.1" {
+		t.Errorf("gateway = %q, want 10.0.0.1", gw)
+	}
+}
+
+func TestResolveGateway_Lookup(t *testing.T) {
+	nc := &NICConfig{
+		GatewayResolution: &GatewayResolution{
+			Mode: "lookup",
+			LookupTable: map[string]map[int]string{
+				"node-1": {0: "172.16.1.254", 1: "172.17.1.254"},
+				"node-2": {0: "172.16.2.254"},
+			},
+		},
+	}
+	gw, err := nc.ResolveGateway("node-1", 0, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gw != "172.16.1.254" {
+		t.Errorf("gateway = %q, want 172.16.1.254", gw)
+	}
+
+	gw, err = nc.ResolveGateway("node-2", 0, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gw != "172.16.2.254" {
+		t.Errorf("gateway = %q, want 172.16.2.254", gw)
+	}
+}
+
+func TestResolveGateway_Lookup_MissingNode(t *testing.T) {
+	nc := &NICConfig{
+		GatewayResolution: &GatewayResolution{
+			Mode:        "lookup",
+			LookupTable: map[string]map[int]string{"node-1": {0: "172.16.1.254"}},
+		},
+	}
+	_, err := nc.ResolveGateway("node-99", 0, "")
+	if err == nil {
+		t.Error("expected error for missing node")
+	}
+}
+
+func TestResolveGateway_Lookup_MissingRail(t *testing.T) {
+	nc := &NICConfig{
+		GatewayResolution: &GatewayResolution{
+			Mode:        "lookup",
+			LookupTable: map[string]map[int]string{"node-1": {0: "172.16.1.254"}},
+		},
+	}
+	_, err := nc.ResolveGateway("node-1", 5, "")
+	if err == nil {
+		t.Error("expected error for missing rail")
+	}
+}
+
+func TestParseConfig_GatewayResolution(t *testing.T) {
+	y := `
+maxPairsPerNUMA: 4
+maxPairsPerNode: 8
+gpuDeviceClassName: gpu.nvidia.com
+nicDeviceClassName: dranet
+nicConfig:
+  mtu: 9000
+  gatewayResolution:
+    mode: lookup
+    lookupTable:
+      "node-1":
+        0: "172.16.1.254"
+        1: "172.17.1.254"
+`
+	cfg, err := ParseConfig([]byte(y))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.NICConfig.GatewayResolution == nil {
+		t.Fatal("gatewayResolution should be set")
+	}
+	if cfg.NICConfig.GatewayResolution.Mode != "lookup" {
+		t.Errorf("mode = %q, want lookup", cfg.NICConfig.GatewayResolution.Mode)
+	}
+	nodeMap := cfg.NICConfig.GatewayResolution.LookupTable["node-1"]
+	if nodeMap == nil {
+		t.Fatal("lookupTable[node-1] should exist")
+	}
+	if nodeMap[0] != "172.16.1.254" {
+		t.Errorf("lookupTable[node-1][0] = %q, want 172.16.1.254", nodeMap[0])
+	}
+}
+
 func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
 	if cfg.MaxPairsPerNUMA != 4 {

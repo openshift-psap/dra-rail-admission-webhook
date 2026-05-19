@@ -30,6 +30,7 @@ type NICSlot struct {
 type AllocationResult struct {
 	NodeName    string
 	RailIndices []int
+	NICIPv4s    []string // parallel to RailIndices
 }
 
 // ExplicitAllocationResult is returned by AllocateExplicit with the selected
@@ -156,6 +157,16 @@ func (a *Allocator) Allocate(ctx context.Context, pod *corev1.Pod, namespace str
 		if len(rails) >= count {
 			selected := rails[:count]
 
+			// Build rail→IPv4 map from slots for this node
+			railIPv4 := make(map[int]string, len(slots))
+			for _, s := range slots {
+				railIPv4[s.RailIndex] = s.IPv4
+			}
+			ipv4s := make([]string, len(selected))
+			for i, rail := range selected {
+				ipv4s[i] = railIPv4[rail]
+			}
+
 			// Mark as pending so subsequent requests don't double-book
 			now := time.Now()
 			for _, rail := range selected {
@@ -168,6 +179,7 @@ func (a *Allocator) Allocate(ctx context.Context, pod *corev1.Pod, namespace str
 			return &AllocationResult{
 				NodeName:    nodeName,
 				RailIndices: selected,
+				NICIPv4s:    ipv4s,
 			}, nil
 		}
 	}

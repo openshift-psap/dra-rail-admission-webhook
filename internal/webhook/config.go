@@ -153,8 +153,38 @@ type NICConfig struct {
 	Rails           []RailConfig  `yaml:"rails,omitempty"`
 	CrossRailCIDR   string        `yaml:"crossRailCIDR,omitempty"`
 	IBRails         []IBRailEntry `yaml:"ibRails,omitempty"`
-	IncludeDevices  *DeviceFilter `yaml:"includeDevices,omitempty"`
-	ExcludeDevices  *DeviceFilter `yaml:"excludeDevices,omitempty"`
+	IncludeDevices    *DeviceFilter     `yaml:"includeDevices,omitempty"`
+	ExcludeDevices    *DeviceFilter     `yaml:"excludeDevices,omitempty"`
+	GatewayResolution *GatewayResolution `yaml:"gatewayResolution,omitempty"`
+}
+
+// GatewayResolution configures how per-claim gateways are determined.
+// "static" (default) uses RailConfig.Gateway. "lookup" resolves via
+// a NodeName + RailIndex table, erroring if the entry is missing.
+type GatewayResolution struct {
+	Mode        string                    `yaml:"mode"`
+	LookupTable map[string]map[int]string `yaml:"lookupTable,omitempty"`
+}
+
+// ResolveGateway returns the gateway IP for a given node, rail, and NIC.
+// Static mode (nil or "static") returns railGateway unchanged.
+// Lookup mode returns the table entry or an error if missing.
+func (nc *NICConfig) ResolveGateway(nodeName string, railIndex int, railGateway string) (string, error) {
+	if nc.GatewayResolution == nil || nc.GatewayResolution.Mode == "" || nc.GatewayResolution.Mode == "static" {
+		return railGateway, nil
+	}
+	if nc.GatewayResolution.Mode == "lookup" {
+		nodeMap, ok := nc.GatewayResolution.LookupTable[nodeName]
+		if !ok {
+			return "", fmt.Errorf("gateway lookup: no entry for node %q", nodeName)
+		}
+		gw, ok := nodeMap[railIndex]
+		if !ok {
+			return "", fmt.Errorf("gateway lookup: no entry for node %q rail %d", nodeName, railIndex)
+		}
+		return gw, nil
+	}
+	return "", fmt.Errorf("unknown gateway resolution mode %q", nc.GatewayResolution.Mode)
 }
 
 // IsDeviceAllowed checks whether a device passes the include/exclude filters.

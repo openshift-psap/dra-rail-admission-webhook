@@ -117,8 +117,16 @@ func (m *Mutator) Mutate(ctx context.Context, pod *corev1.Pod, namespace string)
 			selectedNode = result.NodeName
 
 			for i, pair := range result.Pairs {
+				railGW := ""
+				if pair.RailIndex >= 0 && pair.RailIndex < len(m.Config.NICConfig.Rails) {
+					railGW = m.Config.NICConfig.Rails[pair.RailIndex].Gateway
+				}
+				gateway, err := m.Config.NICConfig.ResolveGateway(result.NodeName, pair.RailIndex, railGW)
+				if err != nil {
+					return nil, fmt.Errorf("failed to resolve gateway for pair %d: %w", i, err)
+				}
 				mapping := ExplicitPairMapping{Devices: pair.Devices, Rail: pair.RailIndex}
-				spec, err := BuildExplicitPairClaimSpec(pair.NICIndex, pair.RailIndex, mapping, m.Config)
+				spec, err := BuildExplicitPairClaimSpec(pair.NICIndex, pair.RailIndex, mapping, m.Config, gateway)
 				if err != nil {
 					return nil, fmt.Errorf("failed to build explicit claim spec for pair %d: %w", i, err)
 				}
@@ -141,7 +149,15 @@ func (m *Mutator) Mutate(ctx context.Context, pod *corev1.Pod, namespace string)
 
 			for i := 0; i < pairCount; i++ {
 				railIdx := result.RailIndices[i]
-				spec, err := BuildSinglePairClaimSpec(i, railIdx, m.Config)
+				railGW := ""
+				if railIdx >= 0 && railIdx < len(m.Config.NICConfig.Rails) {
+					railGW = m.Config.NICConfig.Rails[railIdx].Gateway
+				}
+				gateway, err := m.Config.NICConfig.ResolveGateway(result.NodeName, railIdx, railGW)
+				if err != nil {
+					return nil, fmt.Errorf("failed to resolve gateway for pair %d: %w", i, err)
+				}
+				spec, err := BuildSinglePairClaimSpec(i, railIdx, m.Config, gateway)
 				if err != nil {
 					return nil, fmt.Errorf("failed to build claim spec for pair %d: %w", i, err)
 				}
