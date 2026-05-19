@@ -162,8 +162,8 @@ type NICConfig struct {
 // "static" (default) uses RailConfig.Gateway. "lookup" resolves via
 // a NodeName + RailIndex table, erroring if the entry is missing.
 type GatewayResolution struct {
-	Mode        string                    `yaml:"mode"`
-	LookupTable map[string]map[int]string `yaml:"lookupTable,omitempty"`
+	Mode        string                       `yaml:"mode"`
+	LookupTable map[string]map[string]string `yaml:"lookupTable,omitempty"`
 }
 
 // ResolveGateway returns the gateway IP for a given node, rail, and NIC.
@@ -178,7 +178,8 @@ func (nc *NICConfig) ResolveGateway(nodeName string, railIndex int, railGateway 
 		if !ok {
 			return "", fmt.Errorf("gateway lookup: no entry for node %q", nodeName)
 		}
-		gw, ok := nodeMap[railIndex]
+		key := fmt.Sprintf("%d", railIndex)
+		gw, ok := nodeMap[key]
 		if !ok {
 			return "", fmt.Errorf("gateway lookup: no entry for node %q rail %d", nodeName, railIndex)
 		}

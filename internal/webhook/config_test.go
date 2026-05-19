@@ -734,9 +734,9 @@ func TestResolveGateway_Lookup(t *testing.T) {
 	nc := &NICConfig{
 		GatewayResolution: &GatewayResolution{
 			Mode: "lookup",
-			LookupTable: map[string]map[int]string{
-				"node-1": {0: "172.16.1.254", 1: "172.17.1.254"},
-				"node-2": {0: "172.16.2.254"},
+			LookupTable: map[string]map[string]string{
+				"node-1": {"0": "172.16.1.254", "1": "172.17.1.254"},
+				"node-2": {"0": "172.16.2.254"},
 			},
 		},
 	}
@@ -761,7 +761,7 @@ func TestResolveGateway_Lookup_MissingNode(t *testing.T) {
 	nc := &NICConfig{
 		GatewayResolution: &GatewayResolution{
 			Mode:        "lookup",
-			LookupTable: map[string]map[int]string{"node-1": {0: "172.16.1.254"}},
+			LookupTable: map[string]map[string]string{"node-1": {"0": "172.16.1.254"}},
 		},
 	}
 	_, err := nc.ResolveGateway("node-99", 0, "")
@@ -774,7 +774,7 @@ func TestResolveGateway_Lookup_MissingRail(t *testing.T) {
 	nc := &NICConfig{
 		GatewayResolution: &GatewayResolution{
 			Mode:        "lookup",
-			LookupTable: map[string]map[int]string{"node-1": {0: "172.16.1.254"}},
+			LookupTable: map[string]map[string]string{"node-1": {"0": "172.16.1.254"}},
 		},
 	}
 	_, err := nc.ResolveGateway("node-1", 5, "")
@@ -812,8 +812,8 @@ nicConfig:
 	if nodeMap == nil {
 		t.Fatal("lookupTable[node-1] should exist")
 	}
-	if nodeMap[0] != "172.16.1.254" {
-		t.Errorf("lookupTable[node-1][0] = %q, want 172.16.1.254", nodeMap[0])
+	if nodeMap["0"] != "172.16.1.254" {
+		t.Errorf("lookupTable[node-1][0] = %q, want 172.16.1.254", nodeMap["0"])
 	}
 }
 
