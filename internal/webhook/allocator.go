@@ -573,6 +573,9 @@ func (a *Allocator) scanAvailableSlots(ctx context.Context) (map[string][]NICSlo
 	if a.Config.IsInfiniBand() {
 		return a.scanIBSlots(ctx)
 	}
+	if a.Config.IsCIDRPoolMode() {
+		return a.scanEthernetSlotsVF(ctx)
+	}
 	return a.scanEthernetSlots(ctx)
 }
 
@@ -636,6 +639,77 @@ func (a *Allocator) scanEthernetSlots(ctx context.Context) (map[string][]NICSlot
 				RailIndex: railIdx,
 				NUMAZone:  numa,
 				IPv4:      ipv4,
+			})
+		}
+	}
+
+	return nodeSlots, nil
+}
+
+// scanEthernetSlotsVF discovers available VF NIC slots in CIDRPool mode.
+// Unlike scanEthernetSlots, this does NOT require dra.net/ipv4 (VFs lack it).
+// Matches devices by checking if dra.net/pciAddress starts with configured PciAddressPrefix.
+// Returns NICSlot with IPv4="" (IP assignment handled separately by IP allocator).
+func (a *Allocator) scanEthernetSlotsVF(ctx context.Context) (map[string][]NICSlot, error) {
+	slices, err := a.ResourceClient.ResourceSlices().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list resource slices: %w", err)
+	}
+
+	prefixToRail := make(map[string]int, len(a.Config.NICConfig.Rails))
+	for i, rail := range a.Config.NICConfig.Rails {
+		prefixToRail[rail.PciAddressPrefix] = i
+	}
+
+	nodeSlots := make(map[string][]NICSlot)
+
+	for _, slice := range slices.Items {
+		if slice.Spec.Driver != "dra.net" {
+			continue
+		}
+		nodeName := ""
+		if slice.Spec.NodeName != nil {
+			nodeName = *slice.Spec.NodeName
+		}
+		if nodeName == "" {
+			continue
+		}
+
+		for _, device := range slice.Spec.Devices {
+			if !a.Config.NICConfig.IsDeviceAllowed(device) {
+				continue
+			}
+
+			pciAddr := getPCIAddress(device)
+			if pciAddr == "" {
+				continue
+			}
+
+			if a.Config.NICConfig.RDMARequired {
+				rdmaAttr, ok := device.Attributes[resourcev1.QualifiedName("dra.net/rdma")]
+				if !ok || rdmaAttr.BoolValue == nil || !*rdmaAttr.BoolValue {
+					continue
+				}
+			}
+
+			railIdx := -1
+			for prefix, idx := range prefixToRail {
+				if strings.HasPrefix(pciAddr, prefix) {
+					railIdx = idx
+					break
+				}
+			}
+			if railIdx < 0 {
+				continue
+			}
+
+			numa := getNUMAZone(device)
+
+			nodeSlots[nodeName] = append(nodeSlots[nodeName], NICSlot{
+				NodeName:  nodeName,
+				RailIndex: railIdx,
+				NUMAZone:  numa,
+				IPv4:      "", // VFs lack IPv4; IP assigned separately
 			})
 		}
 	}

@@ -72,9 +72,10 @@ type Route struct {
 // RailConfig defines the network topology for a single rail.
 // Each rail maps to a specific subnet and gateway.
 type RailConfig struct {
-	Subnet     string `yaml:"subnet" json:"subnet"`         // e.g., "10.0.0.0/16"
-	Gateway    string `yaml:"gateway" json:"gateway"`        // e.g., "10.0.0.1"
-	IPv4Prefix string `yaml:"ipv4Prefix" json:"ipv4Prefix"` // e.g., "10.0." for CEL selector
+	Subnet           string `yaml:"subnet" json:"subnet"`                                // e.g., "10.0.0.0/16"
+	Gateway          string `yaml:"gateway" json:"gateway"`                               // e.g., "10.0.0.1"
+	IPv4Prefix       string `yaml:"ipv4Prefix" json:"ipv4Prefix"`                        // e.g., "10.0." for CEL selector
+	PciAddressPrefix string `yaml:"pciAddressPrefix,omitempty" json:"pciAddressPrefix,omitempty"` // e.g., "0000:18:" for VF-to-rail matching
 }
 
 // Rule represents a source-based routing rule.
@@ -158,12 +159,26 @@ type NICConfig struct {
 	GatewayResolution *GatewayResolution `yaml:"gatewayResolution,omitempty"`
 }
 
+// CIDRPoolRef identifies one CIDRPool CR and its associated rail index.
+type CIDRPoolRef struct {
+	Name      string `yaml:"name"`
+	Namespace string `yaml:"namespace"`
+	RailIndex int    `yaml:"railIndex"`
+}
+
+// CIDRPoolConfig holds CIDRPool-based gateway resolution settings.
+type CIDRPoolConfig struct {
+	Pools           []CIDRPoolRef `yaml:"pools"`
+	RefreshInterval string        `yaml:"refreshInterval,omitempty"` // default "60s"
+}
+
 // GatewayResolution configures how per-claim gateways are determined.
 // "static" (default) uses RailConfig.Gateway. "lookup" resolves via
-// a NodeName + RailIndex table, erroring if the entry is missing.
+// a NodeName + RailIndex table. "cidrpool" resolves from CIDRPool CR status.
 type GatewayResolution struct {
-	Mode        string                       `yaml:"mode"`
-	LookupTable map[string]map[string]string `yaml:"lookupTable,omitempty"`
+	Mode           string                       `yaml:"mode"`
+	LookupTable    map[string]map[string]string `yaml:"lookupTable,omitempty"`
+	CIDRPoolConfig *CIDRPoolConfig              `yaml:"cidrPoolConfig,omitempty"`
 }
 
 // ResolveGateway returns the gateway IP for a given node, rail, and NIC.
@@ -184,6 +199,9 @@ func (nc *NICConfig) ResolveGateway(nodeName string, railIndex int, railGateway 
 			return "", fmt.Errorf("gateway lookup: no entry for node %q rail %d", nodeName, railIndex)
 		}
 		return gw, nil
+	}
+	if nc.GatewayResolution.Mode == "cidrpool" {
+		return "", fmt.Errorf("cidrpool mode requires CIDRPoolCache; use the cache-aware gateway resolution path")
 	}
 	return "", fmt.Errorf("unknown gateway resolution mode %q", nc.GatewayResolution.Mode)
 }
@@ -267,6 +285,11 @@ func (c Config) IsExplicitMode() bool {
 // IsInfiniBand returns true when the resolved transport mode is InfiniBand.
 func (c Config) IsInfiniBand() bool {
 	return c.TransportMode == "infiniband"
+}
+
+// IsCIDRPoolMode returns true when gateway resolution uses CIDRPool CRs.
+func (c Config) IsCIDRPoolMode() bool {
+	return c.NICConfig.GatewayResolution != nil && c.NICConfig.GatewayResolution.Mode == "cidrpool"
 }
 
 // ResolveTransportMode detects the network transport from ResourceSlices.
@@ -426,6 +449,34 @@ func ValidateInterceptConfig(cfg Config) error {
 	return nil
 }
 
+// ValidateCIDRPoolConfig validates the CIDRPool gateway resolution configuration.
+func ValidateCIDRPoolConfig(cfg Config) error {
+	if !cfg.IsCIDRPoolMode() {
+		return nil
+	}
+	gw := cfg.NICConfig.GatewayResolution
+	if gw.CIDRPoolConfig == nil {
+		return fmt.Errorf("gatewayResolution mode is 'cidrpool' but cidrPoolConfig is not set")
+	}
+	if len(gw.CIDRPoolConfig.Pools) == 0 {
+		return fmt.Errorf("cidrPoolConfig.pools must have at least one entry")
+	}
+	for i, p := range gw.CIDRPoolConfig.Pools {
+		if p.Name == "" {
+			return fmt.Errorf("cidrPoolConfig.pools[%d]: name must not be empty", i)
+		}
+		if p.Namespace == "" {
+			return fmt.Errorf("cidrPoolConfig.pools[%d]: namespace must not be empty", i)
+		}
+	}
+	for i, rail := range cfg.NICConfig.Rails {
+		if rail.PciAddressPrefix == "" {
+			return fmt.Errorf("cidrpool mode requires pciAddressPrefix on rails[%d]", i)
+		}
+	}
+	return nil
+}
+
 // ParseConfig parses raw YAML bytes into a validated Config.
 func ParseConfig(data []byte) (Config, error) {
 	cfg := DefaultConfig()
@@ -437,6 +488,9 @@ func ParseConfig(data []byte) (Config, error) {
 	}
 	if err := ValidateInterceptConfig(cfg); err != nil {
 		return Config{}, fmt.Errorf("invalid intercept config: %w", err)
+	}
+	if err := ValidateCIDRPoolConfig(cfg); err != nil {
+		return Config{}, fmt.Errorf("invalid cidrpool config: %w", err)
 	}
 	return cfg, nil
 }

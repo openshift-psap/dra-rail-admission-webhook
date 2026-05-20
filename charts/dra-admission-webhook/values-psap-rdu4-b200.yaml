@@ -1,6 +1,11 @@
-# PSAP RDU4 B200 cluster — Ethernet with pcieRoot rail matching
+# PSAP RDU4 B200 cluster — Ethernet with CIDRPool-based VF IP assignment
 webhook:
   replicas: 1
+
+webhookPvc:
+  enabled: true
+  storageClassName: ""
+  size: 100Mi
 
 webhookConfig:
   transportMode: ethernet
@@ -20,48 +25,64 @@ webhookConfig:
         - "ether"
       sriov: true
     gatewayResolution:
-      mode: lookup
-      lookupTable:
-        "dell-b200-1.bmas-001.lab.rdu2.dc.redhat.com":
-          0: "172.16.1.254"
-          1: "172.17.1.254"
-          2: "172.18.1.254"
-          3: "172.19.1.254"
-          4: "172.20.1.254"
-          5: "172.21.1.254"
-          6: "172.22.1.254"
-          7: "172.23.1.254"
-        "dell-b200-2.bmas-001.lab.rdu2.dc.redhat.com":
-          0: "172.16.2.254"
-          1: "172.17.2.254"
-          2: "172.18.2.254"
-          3: "172.19.2.254"
-          4: "172.20.2.254"
-          5: "172.21.2.254"
-          6: "172.22.2.254"
-          7: "172.23.2.254"
+      mode: cidrpool
+      cidrPoolConfig:
+        refreshInterval: "60s"
+        pools:
+          - name: cidr-rail0
+            namespace: nvidia-network-operator
+            railIndex: 0
+          - name: cidr-rail1
+            namespace: nvidia-network-operator
+            railIndex: 1
+          - name: cidr-rail2
+            namespace: nvidia-network-operator
+            railIndex: 2
+          - name: cidr-rail3
+            namespace: nvidia-network-operator
+            railIndex: 3
+          - name: cidr-rail4
+            namespace: nvidia-network-operator
+            railIndex: 4
+          - name: cidr-rail5
+            namespace: nvidia-network-operator
+            railIndex: 5
+          - name: cidr-rail6
+            namespace: nvidia-network-operator
+            railIndex: 6
+          - name: cidr-rail7
+            namespace: nvidia-network-operator
+            railIndex: 7
     rails:
       - subnet: "172.16.0.0/16"
         gateway: ""
         ipv4Prefix: "172.16."
+        pciAddressPrefix: "0000:18:"
       - subnet: "172.17.0.0/16"
         gateway: ""
         ipv4Prefix: "172.17."
+        pciAddressPrefix: "0000:3a:"
       - subnet: "172.18.0.0/16"
         gateway: ""
         ipv4Prefix: "172.18."
+        pciAddressPrefix: "0000:4d:"
       - subnet: "172.19.0.0/16"
         gateway: ""
         ipv4Prefix: "172.19."
+        pciAddressPrefix: "0000:5d:"
       - subnet: "172.20.0.0/16"
         gateway: ""
         ipv4Prefix: "172.20."
+        pciAddressPrefix: "0000:9b:"
       - subnet: "172.21.0.0/16"
         gateway: ""
         ipv4Prefix: "172.21."
+        pciAddressPrefix: "0000:ba:"
       - subnet: "172.22.0.0/16"
         gateway: ""
         ipv4Prefix: "172.22."
+        pciAddressPrefix: "0000:ca:"
       - subnet: "172.23.0.0/16"
         gateway: ""
         ipv4Prefix: "172.23."
+        pciAddressPrefix: "0000:db:"

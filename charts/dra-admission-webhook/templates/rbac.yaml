@@ -35,6 +35,9 @@ rules:
 - apiGroups: [""]
   resources: ["nodes"]
   verbs: ["list", "get"]
+- apiGroups: ["nv-ipam.nvidia.com"]
+  resources: ["cidrpools"]
+  verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

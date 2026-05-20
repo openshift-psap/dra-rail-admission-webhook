@@ -18,8 +18,9 @@ type NICParameters struct {
 
 // NICInterface holds per-NIC interface config.
 type NICInterface struct {
-	Name string `json:"name"`
-	MTU  int    `json:"mtu"`
+	Name      string   `json:"name"`
+	MTU       int      `json:"mtu"`
+	Addresses []string `json:"addresses,omitempty"`
 }
 
 // buildNICSelectors returns CEL device selectors for a NIC.
@@ -55,6 +56,43 @@ func buildNICSelectors(railIndex int, cfg Config) []resourcev1.DeviceSelector {
 						rail.IPv4Prefix,
 					),
 				},
+			})
+		}
+	} else if cfg.NICConfig.RDMARequired {
+		selectors = append(selectors, resourcev1.DeviceSelector{
+			CEL: &resourcev1.CELDeviceSelector{
+				Expression: `device.attributes["dra.net"].rdma == true`,
+			},
+		})
+	}
+
+	return selectors
+}
+
+// buildVFNICSelectors returns CEL selectors for a VF NIC in CIDRPool mode.
+// Matches by PCI address prefix instead of IPv4 prefix (VFs lack IPv4).
+func buildVFNICSelectors(railIndex int, cfg Config) []resourcev1.DeviceSelector {
+	var selectors []resourcev1.DeviceSelector
+
+	hasRail := railIndex >= 0 && railIndex < len(cfg.NICConfig.Rails)
+
+	if hasRail {
+		rail := cfg.NICConfig.Rails[railIndex]
+		if rail.PciAddressPrefix != "" {
+			var expr string
+			if cfg.NICConfig.RDMARequired {
+				expr = fmt.Sprintf(
+					`device.attributes["dra.net"].rdma == true && device.attributes["dra.net"].pciAddress.startsWith(%q)`,
+					rail.PciAddressPrefix,
+				)
+			} else {
+				expr = fmt.Sprintf(
+					`device.attributes["dra.net"].pciAddress.startsWith(%q)`,
+					rail.PciAddressPrefix,
+				)
+			}
+			selectors = append(selectors, resourcev1.DeviceSelector{
+				CEL: &resourcev1.CELDeviceSelector{Expression: expr},
 			})
 		}
 	} else if cfg.NICConfig.RDMARequired {
@@ -227,12 +265,19 @@ func BuildClaimTemplateSpec(count int, numaConstrained bool, cfg Config, railInd
 // railIndex identifies which configured rail to use for routing (-1 means no rail).
 // The table ID is derived from the rail index so that policy routing tables
 // correspond to subnets, not NIC positions.
-func buildNICParameters(nicIndex int, railIndex int, cfg Config, gateway string) NICParameters {
+func buildNICParameters(nicIndex int, railIndex int, cfg Config, gateway string, addresses ...string) NICParameters {
 	params := NICParameters{
 		Interface: NICInterface{
 			Name: fmt.Sprintf("%s%d", cfg.NICConfig.InterfacePrefix, nicIndex),
 			MTU:  cfg.NICConfig.MTU,
 		},
+	}
+	if len(addresses) > 0 {
+		for _, addr := range addresses {
+			if addr != "" {
+				params.Interface.Addresses = append(params.Interface.Addresses, addr)
+			}
+		}
 	}
 
 	// IB fabric handles forwarding natively -- no L3 routing needed
@@ -306,7 +351,7 @@ func buildNICParameters(nicIndex int, railIndex int, cfg Config, gateway string)
 // BuildSinglePairClaimSpec builds a ResourceClaimSpec for one GPU+NIC pair.
 // nicIndex is the position (0, 1, ...) used for interface naming (net0, net1).
 // railIndex identifies which configured rail to use for routing and CEL selection.
-func BuildSinglePairClaimSpec(nicIndex int, railIndex int, cfg Config, gateway string) (resourcev1.ResourceClaimSpec, error) {
+func BuildSinglePairClaimSpec(nicIndex int, railIndex int, cfg Config, gateway string, addresses ...string) (resourcev1.ResourceClaimSpec, error) {
 	gpuReq := resourcev1.DeviceRequest{
 		Name: "gpu",
 		Exactly: &resourcev1.ExactDeviceRequest{
@@ -330,7 +375,12 @@ func BuildSinglePairClaimSpec(nicIndex int, railIndex int, cfg Config, gateway s
 			AllocationMode:  resourcev1.DeviceAllocationModeExactCount,
 		},
 	}
-	nicSelectors := buildNICSelectors(railIndex, cfg)
+	var nicSelectors []resourcev1.DeviceSelector
+	if cfg.IsCIDRPoolMode() {
+		nicSelectors = buildVFNICSelectors(railIndex, cfg)
+	} else {
+		nicSelectors = buildNICSelectors(railIndex, cfg)
+	}
 	if len(nicSelectors) > 0 {
 		nicReq.Exactly.Selectors = nicSelectors
 	}
@@ -345,7 +395,7 @@ func BuildSinglePairClaimSpec(nicIndex int, railIndex int, cfg Config, gateway s
 	}
 
 	// NIC opaque config
-	nicParams := buildNICParameters(nicIndex, railIndex, cfg, gateway)
+	nicParams := buildNICParameters(nicIndex, railIndex, cfg, gateway, addresses...)
 	paramsJSON, err := json.Marshal(nicParams)
 	if err != nil {
 		return resourcev1.ResourceClaimSpec{}, fmt.Errorf("failed to marshal NIC parameters: %w", err)
@@ -397,7 +447,7 @@ func buildDevicePinSelector(sel DeviceSelectorConfig, value string) resourcev1.D
 // BuildExplicitPairClaimSpec builds a ResourceClaimSpec for one device set
 // where each device is pinned to an exact attribute value via CEL selectors.
 // No MatchAttribute constraint is used — the CEL selectors do the pinning.
-func BuildExplicitPairClaimSpec(nicIndex int, railIndex int, pair ExplicitPairMapping, cfg Config, gateway string) (resourcev1.ResourceClaimSpec, error) {
+func BuildExplicitPairClaimSpec(nicIndex int, railIndex int, pair ExplicitPairMapping, cfg Config, gateway string, addresses ...string) (resourcev1.ResourceClaimSpec, error) {
 	keys := cfg.DeviceSelectorKeys()
 
 	requests := make([]resourcev1.DeviceRequest, 0, len(keys))
@@ -420,10 +470,15 @@ func BuildExplicitPairClaimSpec(nicIndex int, railIndex int, pair ExplicitPairMa
 		selectors := []resourcev1.DeviceSelector{pinSelector}
 
 		if role == "nic" {
-			nicSelectors := buildNICSelectors(railIndex, cfg)
-			selectors = append(selectors, nicSelectors...)
+			var nicSels []resourcev1.DeviceSelector
+			if cfg.IsCIDRPoolMode() {
+				nicSels = buildVFNICSelectors(railIndex, cfg)
+			} else {
+				nicSels = buildNICSelectors(railIndex, cfg)
+			}
+			selectors = append(selectors, nicSels...)
 
-			nicParams := buildNICParameters(nicIndex, railIndex, cfg, gateway)
+			nicParams := buildNICParameters(nicIndex, railIndex, cfg, gateway, addresses...)
 			paramsJSON, err := json.Marshal(nicParams)
 			if err != nil {
 				return resourcev1.ResourceClaimSpec{}, fmt.Errorf("failed to marshal NIC parameters: %w", err)

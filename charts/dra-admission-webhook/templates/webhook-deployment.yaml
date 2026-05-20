@@ -70,6 +70,10 @@ spec:
         - name: tls-certs
           mountPath: /certs
           readOnly: true
+        {{- if .Values.webhookPvc.enabled }}
+        - name: data
+          mountPath: /data
+        {{- end }}
         resources:
           {{- toYaml .Values.webhook.resources | nindent 10 }}
         securityContext:
@@ -95,3 +99,8 @@ spec:
       - name: tls-certs
         secret:
           secretName: {{ include "dra-admission-webhook.tlsSecretName" . }}
+      {{- if .Values.webhookPvc.enabled }}
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ include "dra-admission-webhook.fullname" . }}-webhook-data
+      {{- end }}

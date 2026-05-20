@@ -175,6 +175,15 @@ reconcilerConfig:
   statePath: "/data/reconciler-state.json"
 
 # ============================================================
+#  Webhook PVC (IP allocator state for cidrpool mode)
+# ============================================================
+webhookPvc:
+  enabled: false
+  storageClassName: ""
+  size: 100Mi
+  accessModes:
+    - ReadWriteOnce
+
 #  Reconciler PVC
 # ============================================================
 reconcilerPvc:

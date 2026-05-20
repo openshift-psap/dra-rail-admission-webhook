@@ -45,7 +45,9 @@ type Mutator struct {
 	KubeClient     kubernetes.Interface
 	ResourceClient resourceclient.ResourceV1Interface
 	Config         Config
-	Allocator      *Allocator // cluster-level GPU-NIC pair allocator
+	Allocator      *Allocator      // cluster-level GPU-NIC pair allocator
+	CIDRPoolCache  *CIDRPoolCache  // nil when not in cidrpool mode
+	IPAllocator    *IPAllocator    // nil when not in cidrpool mode
 }
 
 // jsonPatchOp represents a single JSON Patch operation.
@@ -117,16 +119,35 @@ func (m *Mutator) Mutate(ctx context.Context, pod *corev1.Pod, namespace string)
 			selectedNode = result.NodeName
 
 			for i, pair := range result.Pairs {
-				railGW := ""
-				if pair.RailIndex >= 0 && pair.RailIndex < len(m.Config.NICConfig.Rails) {
-					railGW = m.Config.NICConfig.Rails[pair.RailIndex].Gateway
+				var gateway string
+				var addresses []string
+
+				if m.Config.IsCIDRPoolMode() {
+					alloc, ok := m.CIDRPoolCache.GetAllocation(pair.RailIndex, result.NodeName)
+					if !ok {
+						return nil, fmt.Errorf("no cidrpool allocation for node %q rail %d", result.NodeName, pair.RailIndex)
+					}
+					gateway = alloc.Gateway
+					claimRef := fmt.Sprintf("%s/%s", namespace, podName(pod))
+					ipCIDR, err := m.IPAllocator.AllocateIP(result.NodeName, pair.RailIndex, alloc.Prefix, claimRef, alloc.ReservedIPs)
+					if err != nil {
+						return nil, fmt.Errorf("failed to allocate IP for pair %d: %w", i, err)
+					}
+					addresses = []string{ipCIDR}
+				} else {
+					railGW := ""
+					if pair.RailIndex >= 0 && pair.RailIndex < len(m.Config.NICConfig.Rails) {
+						railGW = m.Config.NICConfig.Rails[pair.RailIndex].Gateway
+					}
+					var err error
+					gateway, err = m.Config.NICConfig.ResolveGateway(result.NodeName, pair.RailIndex, railGW)
+					if err != nil {
+						return nil, fmt.Errorf("failed to resolve gateway for pair %d: %w", i, err)
+					}
 				}
-				gateway, err := m.Config.NICConfig.ResolveGateway(result.NodeName, pair.RailIndex, railGW)
-				if err != nil {
-					return nil, fmt.Errorf("failed to resolve gateway for pair %d: %w", i, err)
-				}
+
 				mapping := ExplicitPairMapping{Devices: pair.Devices, Rail: pair.RailIndex}
-				spec, err := BuildExplicitPairClaimSpec(pair.NICIndex, pair.RailIndex, mapping, m.Config, gateway)
+				spec, err := BuildExplicitPairClaimSpec(pair.NICIndex, pair.RailIndex, mapping, m.Config, gateway, addresses...)
 				if err != nil {
 					return nil, fmt.Errorf("failed to build explicit claim spec for pair %d: %w", i, err)
 				}
@@ -149,15 +170,33 @@ func (m *Mutator) Mutate(ctx context.Context, pod *corev1.Pod, namespace string)
 
 			for i := 0; i < pairCount; i++ {
 				railIdx := result.RailIndices[i]
-				railGW := ""
-				if railIdx >= 0 && railIdx < len(m.Config.NICConfig.Rails) {
-					railGW = m.Config.NICConfig.Rails[railIdx].Gateway
+				var gateway string
+				var addresses []string
+
+				if m.Config.IsCIDRPoolMode() {
+					alloc, ok := m.CIDRPoolCache.GetAllocation(railIdx, result.NodeName)
+					if !ok {
+						return nil, fmt.Errorf("no cidrpool allocation for node %q rail %d", result.NodeName, railIdx)
+					}
+					gateway = alloc.Gateway
+					claimRef := fmt.Sprintf("%s/%s", namespace, podName(pod))
+					ipCIDR, err := m.IPAllocator.AllocateIP(result.NodeName, railIdx, alloc.Prefix, claimRef, alloc.ReservedIPs)
+					if err != nil {
+						return nil, fmt.Errorf("failed to allocate IP for pair %d: %w", i, err)
+					}
+					addresses = []string{ipCIDR}
+				} else {
+					railGW := ""
+					if railIdx >= 0 && railIdx < len(m.Config.NICConfig.Rails) {
+						railGW = m.Config.NICConfig.Rails[railIdx].Gateway
+					}
+					gateway, err = m.Config.NICConfig.ResolveGateway(result.NodeName, railIdx, railGW)
+					if err != nil {
+						return nil, fmt.Errorf("failed to resolve gateway for pair %d: %w", i, err)
+					}
 				}
-				gateway, err := m.Config.NICConfig.ResolveGateway(result.NodeName, railIdx, railGW)
-				if err != nil {
-					return nil, fmt.Errorf("failed to resolve gateway for pair %d: %w", i, err)
-				}
-				spec, err := BuildSinglePairClaimSpec(i, railIdx, m.Config, gateway)
+
+				spec, err := BuildSinglePairClaimSpec(i, railIdx, m.Config, gateway, addresses...)
 				if err != nil {
 					return nil, fmt.Errorf("failed to build claim spec for pair %d: %w", i, err)
 				}
