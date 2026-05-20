@@ -22,8 +22,8 @@ const (
 	defaultKubeconfig  = "/home/thibrahi/kubeconfigs/kubeconfig_files/ibmcluster"
 	defaultWebhookNS   = "dra-webhook-system"
 	defaultConfigMap   = "dra-gpu-nic-webhook-config"
-	webhookDeployment  = "dra-gpu-nic-webhook"
-	reconcilerDeployment = "dra-gpu-nic-reconciler"
+	webhookDeployment    = "dra-gpu-nic-webhook"
+	reconcilerDeployment = "dra-gpu-nic-webhook-reconciler"
 )
 
 // Framework provides test-scoped Kubernetes clients and namespace lifecycle.

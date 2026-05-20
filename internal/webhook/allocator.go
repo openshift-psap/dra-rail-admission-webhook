@@ -685,6 +685,20 @@ func (a *Allocator) scanEthernetSlotsVF(ctx context.Context) (map[string][]NICSl
 				continue
 			}
 
+			// Filter by deviceType: "vf" requires sriov==false, "pf" requires sriov==true
+			if a.Config.NICConfig.DeviceType != "" {
+				sriovAttr, ok := device.Attributes[resourcev1.QualifiedName(NICSRIOVAttribute)]
+				if ok && sriovAttr.BoolValue != nil {
+					isVF := !*sriovAttr.BoolValue
+					if a.Config.NICConfig.DeviceType == "vf" && !isVF {
+						continue
+					}
+					if a.Config.NICConfig.DeviceType == "pf" && isVF {
+						continue
+					}
+				}
+			}
+
 			if a.Config.NICConfig.RDMARequired {
 				rdmaAttr, ok := device.Attributes[resourcev1.QualifiedName("dra.net/rdma")]
 				if !ok || rdmaAttr.BoolValue == nil || !*rdmaAttr.BoolValue {

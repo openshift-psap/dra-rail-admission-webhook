@@ -69,38 +69,59 @@ func buildNICSelectors(railIndex int, cfg Config) []resourcev1.DeviceSelector {
 	return selectors
 }
 
-// buildVFNICSelectors returns CEL selectors for a VF NIC in CIDRPool mode.
-// Matches by PCI address prefix instead of IPv4 prefix (VFs lack IPv4).
+// buildVFNICSelectors returns CEL selectors for a NIC in CIDRPool mode.
+// Matches by PCI address prefix instead of IPv4 prefix.
+// Uses nicConfig.deviceType to filter: "vf" adds sriov==false, "pf" adds sriov==true.
 func buildVFNICSelectors(railIndex int, cfg Config) []resourcev1.DeviceSelector {
 	var selectors []resourcev1.DeviceSelector
 
 	hasRail := railIndex >= 0 && railIndex < len(cfg.NICConfig.Rails)
 
+	sriovCEL := ""
+	switch cfg.NICConfig.DeviceType {
+	case "vf":
+		sriovCEL = `device.attributes["dra.net"].sriov == false`
+	case "pf":
+		sriovCEL = `device.attributes["dra.net"].sriov == true`
+	}
+
 	if hasRail {
 		rail := cfg.NICConfig.Rails[railIndex]
 		if rail.PciAddressPrefix != "" {
-			var expr string
+			var parts []string
 			if cfg.NICConfig.RDMARequired {
-				expr = fmt.Sprintf(
-					`device.attributes["dra.net"].rdma == true && device.attributes["dra.net"].pciAddress.startsWith(%q)`,
-					rail.PciAddressPrefix,
-				)
-			} else {
-				expr = fmt.Sprintf(
-					`device.attributes["dra.net"].pciAddress.startsWith(%q)`,
-					rail.PciAddressPrefix,
-				)
+				parts = append(parts, `device.attributes["dra.net"].rdma == true`)
+			}
+			if sriovCEL != "" {
+				parts = append(parts, sriovCEL)
+			}
+			parts = append(parts, fmt.Sprintf(`device.attributes["dra.net"].pciAddress.startsWith(%q)`, rail.PciAddressPrefix))
+
+			expr := parts[0]
+			for _, p := range parts[1:] {
+				expr += " && " + p
 			}
 			selectors = append(selectors, resourcev1.DeviceSelector{
 				CEL: &resourcev1.CELDeviceSelector{Expression: expr},
 			})
 		}
-	} else if cfg.NICConfig.RDMARequired {
-		selectors = append(selectors, resourcev1.DeviceSelector{
-			CEL: &resourcev1.CELDeviceSelector{
-				Expression: `device.attributes["dra.net"].rdma == true`,
-			},
-		})
+	} else {
+		var parts []string
+		if cfg.NICConfig.RDMARequired {
+			parts = append(parts, `device.attributes["dra.net"].rdma == true`)
+		}
+		if sriovCEL != "" {
+			parts = append(parts, sriovCEL)
+		}
+		if len(parts) > 0 {
+			expr := parts[0]
+			for _, p := range parts[1:] {
+				expr += " && " + p
+			}
+			selectors = append(selectors, resourcev1.DeviceSelector{
+				CEL: &resourcev1.CELDeviceSelector{Expression: expr},
+			})
+		}
 	}
 
 	return selectors

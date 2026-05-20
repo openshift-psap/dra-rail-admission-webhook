@@ -20,10 +20,10 @@ webhookConfig:
     interfacePrefix: "net"
     startingTableId: 100
     crossRailCIDR: "172.16.0.0/12"
+    deviceType: vf
     includeDevices:
       encapsulations:
         - "ether"
-      sriov: true
     gatewayResolution:
       mode: cidrpool
       cidrPoolConfig:

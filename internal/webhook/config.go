@@ -157,6 +157,10 @@ type NICConfig struct {
 	IncludeDevices    *DeviceFilter     `yaml:"includeDevices,omitempty"`
 	ExcludeDevices    *DeviceFilter     `yaml:"excludeDevices,omitempty"`
 	GatewayResolution *GatewayResolution `yaml:"gatewayResolution,omitempty"`
+	// DeviceType selects NIC device type: "vf" for virtual functions,
+	// "pf" for physical functions, "" for no preference.
+	// Applied in both slot scanning and CEL selectors.
+	DeviceType string `yaml:"deviceType,omitempty"`
 }
 
 // CIDRPoolRef identifies one CIDRPool CR and its associated rail index.
