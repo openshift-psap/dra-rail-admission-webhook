@@ -1,12 +1,30 @@
 {{- $ns := include "dra-admission-webhook.namespace" . -}}
 {{- $svcName := include "dra-admission-webhook.serviceName" . -}}
 {{- $caBundle := "" -}}
+{{- $certs := dict -}}
 {{- if eq .Values.tls.mode "helm-generated" -}}
-  {{- $certs := include "dra-admission-webhook.tlsCerts" . | fromJson -}}
+  {{- $certs = include "dra-admission-webhook.tlsCerts" . | fromJson -}}
   {{- $caBundle = $certs.ca | b64enc -}}
 {{- else if eq .Values.tls.mode "manual" -}}
   {{- $caBundle = .Values.tls.caBundle -}}
 {{- end -}}
+{{- /* --- TLS Secret (helm-generated mode) --- */ -}}
+{{- if eq .Values.tls.mode "helm-generated" }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "dra-admission-webhook.tlsSecretName" . }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "dra-admission-webhook.labels" . | nindent 4 }}
+type: kubernetes.io/tls
+data:
+  tls.crt: {{ $certs.crt | b64enc }}
+  tls.key: {{ $certs.key | b64enc }}
+  ca.crt: {{ $certs.ca | b64enc }}
+{{- end }}
+---
 apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration
 metadata:

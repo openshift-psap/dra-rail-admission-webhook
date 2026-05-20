@@ -131,23 +131,15 @@ Reconciler image.
 
 {{/*
 Generate TLS certificate data. Returns a dict with keys: crt, key, ca.
-Uses lookup to preserve existing certs across upgrades.
+Always generates fresh certs. The secret and webhook config templates
+are co-located in a single file so they share one $certs invocation.
 */}}
 {{- define "dra-admission-webhook.tlsCerts" -}}
 {{- $ns := include "dra-admission-webhook.namespace" . -}}
-{{- $secretName := include "dra-admission-webhook.tlsSecretName" . -}}
 {{- $svcName := include "dra-admission-webhook.serviceName" . -}}
 {{- $cn := printf "%s.%s.svc" $svcName $ns -}}
 {{- $altNames := list $cn (printf "%s.%s.svc.cluster.local" $svcName $ns) -}}
-{{- $existing := lookup "v1" "Secret" $ns $secretName -}}
-{{- if $existing -}}
-  {{- $caCert := index $existing.data "ca.crt" | b64dec -}}
-  {{- $tlsCert := index $existing.data "tls.crt" | b64dec -}}
-  {{- $tlsKey := index $existing.data "tls.key" | b64dec -}}
-  {{- dict "ca" $caCert "crt" $tlsCert "key" $tlsKey | toJson -}}
-{{- else -}}
-  {{- $ca := genCA "dra-webhook-ca" 365 -}}
-  {{- $cert := genSignedCert $cn nil $altNames 365 $ca -}}
-  {{- dict "ca" $ca.Cert "crt" $cert.Cert "key" $cert.Key | toJson -}}
-{{- end -}}
+{{- $ca := genCA "dra-webhook-ca" 365 -}}
+{{- $cert := genSignedCert $cn nil $altNames 365 $ca -}}
+{{- dict "ca" $ca.Cert "crt" $cert.Cert "key" $cert.Key | toJson -}}
 {{- end }}

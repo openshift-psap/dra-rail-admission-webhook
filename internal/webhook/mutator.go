@@ -200,7 +200,8 @@ func (m *Mutator) Mutate(ctx context.Context, pod *corev1.Pod, namespace string)
 				if err != nil {
 					return nil, fmt.Errorf("failed to build claim spec for pair %d: %w", i, err)
 				}
-				name := SinglePairTemplateName(i, railIdx, m.Config)
+				uniqueData := append([]string{gateway}, addresses...)
+				name := SinglePairTemplateName(i, railIdx, m.Config, uniqueData...)
 				if err := m.ensureClaimTemplate(ctx, namespace, name, spec); err != nil {
 					return nil, fmt.Errorf("failed to ensure claim template for pair %d: %w", i, err)
 				}

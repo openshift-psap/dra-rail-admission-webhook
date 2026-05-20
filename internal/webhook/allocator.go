@@ -843,13 +843,20 @@ func getPCIAddress(device resourcev1.Device) string {
 // for larger requests that need all slots in a single zone.
 func selectSlots(slots []NICSlot, count int, numaConstrained bool, maxPairsPerNUMA int) []int {
 	if numaConstrained {
-		// Group by NUMA zone
+		// Group unique rails by NUMA zone
 		numaSlots := make(map[int][]int)
+		numaSeen := make(map[int]map[int]bool)
 		for _, s := range slots {
-			numaSlots[s.NUMAZone] = append(numaSlots[s.NUMAZone], s.RailIndex)
+			if numaSeen[s.NUMAZone] == nil {
+				numaSeen[s.NUMAZone] = make(map[int]bool)
+			}
+			if !numaSeen[s.NUMAZone][s.RailIndex] {
+				numaSeen[s.NUMAZone][s.RailIndex] = true
+				numaSlots[s.NUMAZone] = append(numaSlots[s.NUMAZone], s.RailIndex)
+			}
 		}
 
-		// Collect eligible zones (those with enough slots)
+		// Collect eligible zones (those with enough unique rails)
 		type zoneInfo struct {
 			zone  int
 			rails []int
@@ -864,10 +871,6 @@ func selectSlots(slots []NICSlot, count int, numaConstrained bool, maxPairsPerNU
 			return nil
 		}
 
-		// For small requests: prefer the zone with fewest free slots
-		// (most utilized) to pack small requests together.
-		// For large requests (>= maxPairsPerNUMA): prefer the zone with
-		// most free slots to maximize success.
 		sort.Slice(eligible, func(i, j int) bool {
 			if count < maxPairsPerNUMA {
 				return len(eligible[i].rails) < len(eligible[j].rails)
@@ -878,10 +881,14 @@ func selectSlots(slots []NICSlot, count int, numaConstrained bool, maxPairsPerNU
 		return eligible[0].rails[:count]
 	}
 
-	// Cross-NUMA: any rails
+	// Cross-NUMA: unique rails only
+	seen := make(map[int]bool)
 	var rails []int
 	for _, s := range slots {
-		rails = append(rails, s.RailIndex)
+		if !seen[s.RailIndex] {
+			seen[s.RailIndex] = true
+			rails = append(rails, s.RailIndex)
+		}
 	}
 	if len(rails) >= count {
 		return rails[:count]

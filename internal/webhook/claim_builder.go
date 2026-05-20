@@ -442,12 +442,16 @@ func BuildSinglePairClaimSpec(nicIndex int, railIndex int, cfg Config, gateway s
 }
 
 // SinglePairTemplateName returns a deterministic name for a single-pair
-// ResourceClaimTemplate based on NIC position, rail index, and config.
-func SinglePairTemplateName(nicIndex int, railIndex int, cfg Config) string {
+// ResourceClaimTemplate based on NIC position, rail index, config, and
+// optional per-pod unique data (gateway, addresses) for CIDRPool mode.
+func SinglePairTemplateName(nicIndex int, railIndex int, cfg Config, uniqueData ...string) string {
 	h := sha256.New()
 	data, _ := json.Marshal(cfg)
 	h.Write(data)
 	_, _ = fmt.Fprintf(h, "nic:%d:rail:%d", nicIndex, railIndex)
+	for _, d := range uniqueData {
+		_, _ = fmt.Fprintf(h, ":%s", d)
+	}
 	hash := fmt.Sprintf("%x", h.Sum(nil))[:8]
 	return fmt.Sprintf("gpu-nic-pair-%d-rail%d-%s", nicIndex, railIndex, hash)
 }
