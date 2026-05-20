@@ -205,8 +205,8 @@ func (a *IPAllocator) save() error {
 	tmpPath := tmpFile.Name()
 
 	defer func() {
-		tmpFile.Close()
-		os.Remove(tmpPath) // Clean up if rename fails
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
 	}()
 
 	encoder := json.NewEncoder(tmpFile)
