@@ -80,11 +80,14 @@ jobs:
       - name: Lint default values
         run: helm lint charts/dra-admission-webhook/
 
-      - name: Lint AKS NDv5 values
-        run: helm lint charts/dra-admission-webhook/ -f charts/dra-admission-webhook/values-aks-ndv5.yaml
+      - name: Lint NDv5 InfiniBand values
+        run: helm lint charts/dra-admission-webhook/ -f charts/dra-admission-webhook/values-ndv5-infiniband.yaml
 
-      - name: Lint PSAP RDU4 B200 values
-        run: helm lint charts/dra-admission-webhook/ -f charts/dra-admission-webhook/values-psap-rdu4-b200.yaml
+      - name: Lint B200 Ethernet VF values
+        run: helm lint charts/dra-admission-webhook/ -f charts/dra-admission-webhook/values-b200-ethernet-vf.yaml
+
+      - name: Lint B200 Ethernet PF values
+        run: helm lint charts/dra-admission-webhook/ -f charts/dra-admission-webhook/values-b200-ethernet-pf.yaml
 
       - name: Template renders without errors
         run: helm template test charts/dra-admission-webhook/
