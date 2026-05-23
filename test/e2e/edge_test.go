@@ -53,13 +53,14 @@ func testEdgeCases(t *testing.T) {
 				return
 			}
 			WaitForDeploymentReady(t, f, f.WebhookNS, webhookDeployment, 3*time.Minute)
+			WaitForWebhookEndpoints(t, f, 60*time.Second)
 		})
 
 		// Wait for all webhook pods to terminate
 		WaitForCondition(t, 60*time.Second, "webhook pods terminated", func() bool {
 			pods, err := f.KubeClient.CoreV1().Pods(f.WebhookNS).List(
 				context.Background(), metav1.ListOptions{
-					LabelSelector: "app=dra-gpu-nic-webhook",
+					LabelSelector: "app.kubernetes.io/component=webhook",
 				})
 			if err != nil {
 				return false
@@ -87,6 +88,7 @@ func testEdgeCases(t *testing.T) {
 		t.Cleanup(func() {
 			restore()
 			RestartAndWait(t, f, f.WebhookNS, webhookDeployment, 3*time.Minute)
+			WaitForWebhookEndpoints(t, f, 60*time.Second)
 		})
 
 		err := f.KubeClient.CoreV1().ConfigMaps(f.WebhookNS).Delete(
