@@ -685,17 +685,16 @@ func (a *Allocator) scanEthernetSlotsVF(ctx context.Context) (map[string][]NICSl
 				continue
 			}
 
-			// Filter by deviceType: "vf" requires sriov==false, "pf" requires sriov==true
+			// Filter by deviceType using isSriovVf attribute:
+			// "vf" requires isSriovVf==true, "pf" requires isSriovVf absent or false
 			if a.Config.NICConfig.DeviceType != "" {
-				sriovAttr, ok := device.Attributes[resourcev1.QualifiedName(NICSRIOVAttribute)]
-				if ok && sriovAttr.BoolValue != nil {
-					isVF := !*sriovAttr.BoolValue
-					if a.Config.NICConfig.DeviceType == "vf" && !isVF {
-						continue
-					}
-					if a.Config.NICConfig.DeviceType == "pf" && isVF {
-						continue
-					}
+				vfAttr, hasVfAttr := device.Attributes[resourcev1.QualifiedName(NICIsSriovVfAttribute)]
+				isVF := hasVfAttr && vfAttr.BoolValue != nil && *vfAttr.BoolValue
+				if a.Config.NICConfig.DeviceType == "vf" && !isVF {
+					continue
+				}
+				if a.Config.NICConfig.DeviceType == "pf" && isVF {
+					continue
 				}
 			}
 

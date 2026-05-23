@@ -71,18 +71,19 @@ func buildNICSelectors(railIndex int, cfg Config) []resourcev1.DeviceSelector {
 
 // buildVFNICSelectors returns CEL selectors for a NIC in CIDRPool mode.
 // Matches by PCI address prefix instead of IPv4 prefix.
-// Uses nicConfig.deviceType to filter: "vf" adds sriov==false, "pf" adds sriov==true.
+// Uses nicConfig.deviceType: "vf" requires isSriovVf==true (actual VFs only),
+// "pf" excludes VFs via !has(isSriovVf) || isSriovVf==false.
 func buildVFNICSelectors(railIndex int, cfg Config) []resourcev1.DeviceSelector {
 	var selectors []resourcev1.DeviceSelector
 
 	hasRail := railIndex >= 0 && railIndex < len(cfg.NICConfig.Rails)
 
-	sriovCEL := ""
+	deviceTypeCEL := ""
 	switch cfg.NICConfig.DeviceType {
 	case "vf":
-		sriovCEL = `device.attributes["dra.net"].sriov == false`
+		deviceTypeCEL = `has(device.attributes["dra.net"].isSriovVf) && device.attributes["dra.net"].isSriovVf == true`
 	case "pf":
-		sriovCEL = `device.attributes["dra.net"].sriov == true`
+		deviceTypeCEL = `(!has(device.attributes["dra.net"].isSriovVf) || device.attributes["dra.net"].isSriovVf == false)`
 	}
 
 	if hasRail {
@@ -92,8 +93,8 @@ func buildVFNICSelectors(railIndex int, cfg Config) []resourcev1.DeviceSelector 
 			if cfg.NICConfig.RDMARequired {
 				parts = append(parts, `device.attributes["dra.net"].rdma == true`)
 			}
-			if sriovCEL != "" {
-				parts = append(parts, sriovCEL)
+			if deviceTypeCEL != "" {
+				parts = append(parts, deviceTypeCEL)
 			}
 			parts = append(parts, fmt.Sprintf(`device.attributes["dra.net"].pciAddress.startsWith(%q)`, rail.PciAddressPrefix))
 
@@ -110,8 +111,8 @@ func buildVFNICSelectors(railIndex int, cfg Config) []resourcev1.DeviceSelector 
 		if cfg.NICConfig.RDMARequired {
 			parts = append(parts, `device.attributes["dra.net"].rdma == true`)
 		}
-		if sriovCEL != "" {
-			parts = append(parts, sriovCEL)
+		if deviceTypeCEL != "" {
+			parts = append(parts, deviceTypeCEL)
 		}
 		if len(parts) > 0 {
 			expr := parts[0]
