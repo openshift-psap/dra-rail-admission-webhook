@@ -10,7 +10,6 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	resourcev1 "k8s.io/api/resource/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/llm-d/dra-admission-webhook/internal/webhook"
@@ -155,9 +154,10 @@ func getGPUNodes(t *testing.T, f *Framework) []string {
 	return result
 }
 
-// waitForNICAvailability polls ResourceSlices until every GPU node has at most
-// maxAvailable RDMA NICs with dra.net/ifName present. This ensures the
-// dra.net driver has finished stripping attributes from allocated NICs.
+// waitForNICAvailability polls ResourceClaims until each GPU node has at most
+// maxAvailable rails free. Each NIC claim consumes one rail. Total rails per
+// node equals maxPairsPerNode from the webhook config (typically 8).
+// Uses claim scanning — works for both PFs and VFs.
 func waitForNICAvailability(t *testing.T, f *Framework, gpuNodes []string, maxAvailable int, timeout time.Duration) {
 	t.Helper()
 
@@ -166,59 +166,56 @@ func waitForNICAvailability(t *testing.T, f *Framework, gpuNodes []string, maxAv
 		gpuNodeSet[n] = true
 	}
 
+	// Read maxPairsPerNode from the webhook ConfigMap
+	totalRails := 8 // default
+	cm, err := f.KubeClient.CoreV1().ConfigMaps(f.WebhookNS).Get(
+		context.Background(), f.ConfigMapName, metav1.GetOptions{})
+	if err == nil {
+		var cfg webhook.Config
+		if data, ok := cm.Data["config.yaml"]; ok {
+			if parsed, err := webhook.ParseConfig([]byte(data)); err == nil {
+				cfg = parsed
+				totalRails = cfg.MaxPairsPerNode
+			}
+		}
+		_ = cfg
+	}
+
 	WaitForCondition(t, timeout, fmt.Sprintf("NIC availability ≤%d per GPU node", maxAvailable), func() bool {
-		slices, err := f.ResourceClient.ResourceSlices().List(
+		claims, err := f.ResourceClient.ResourceClaims(f.Namespace).List(
 			context.Background(), metav1.ListOptions{})
 		if err != nil {
 			return false
 		}
 
-		for _, slice := range slices.Items {
-			if slice.Spec.Driver != "dra.net" || slice.Spec.NodeName == nil {
+		consumedPerNode := make(map[string]int)
+		for _, claim := range claims.Items {
+			alloc := claim.Status.Allocation
+			if alloc == nil {
 				continue
 			}
-			node := *slice.Spec.NodeName
-			if !gpuNodeSet[node] {
-				continue
-			}
-
-			available := 0
-			for _, d := range slice.Spec.Devices {
-				if isRDMANICWithIfName(d) {
-					available++
+			for _, result := range alloc.Devices.Results {
+				if result.Driver == "dra.net" {
+					consumedPerNode[result.Pool]++
 				}
 			}
+		}
+
+		for node := range gpuNodeSet {
+			consumed := consumedPerNode[node]
+			available := totalRails - consumed
+			if available < 0 {
+				available = 0
+			}
 			if available > maxAvailable {
-				t.Logf("  Node %s: %d RDMA NICs still have ifName (want ≤%d)", node, available, maxAvailable)
+				t.Logf("  Node %s: %d rails available (%d total - %d consumed, want ≤%d)", node, available, totalRails, consumed, maxAvailable)
 				return false
 			}
 		}
 		return true
 	})
 
-	t.Logf("ResourceSlices confirmed: ≤%d RDMA NICs available per GPU node", maxAvailable)
-}
-
-// isRDMANICWithIfName checks if a device is an RDMA NIC that still has ifName
-// (i.e., it is available / not allocated).
-func isRDMANICWithIfName(d resourcev1.Device) bool {
-	attrs := d.Attributes
-	if attrs == nil {
-		return false
-	}
-
-	// Must have dra.net/ifName
-	if _, ok := attrs[resourcev1.QualifiedName("dra.net/ifName")]; !ok {
-		return false
-	}
-
-	// Must have dra.net/rdma == true
-	rdmaAttr, ok := attrs[resourcev1.QualifiedName("dra.net/rdma")]
-	if !ok || rdmaAttr.BoolValue == nil || !*rdmaAttr.BoolValue {
-		return false
-	}
-
-	return true
+	t.Logf("ResourceClaim scan confirmed: ≤%d rails available per GPU node", maxAvailable)
 }
 
 // createBlockerPodsOnAllNodes creates a blocker pod on each GPU node requesting
