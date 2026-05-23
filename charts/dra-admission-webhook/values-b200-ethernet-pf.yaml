@@ -1,0 +1,68 @@
+# B200 Ethernet PF mode — IPv4 prefix matching with per-node gateway lookup.
+# Replace node FQDNs and gateway IPs with your cluster's values.
+webhook:
+  replicas: 1
+
+webhookConfig:
+  transportMode: ethernet
+  maxPairsPerNUMA: 4
+  maxPairsPerNode: 8
+  gpuDeviceClassName: gpu.nvidia.com
+  nicDeviceClassName: dranet
+  preflightCheck: false
+  nicConfig:
+    mtu: 9000
+    rdmaRequired: true
+    interfacePrefix: "net"
+    startingTableId: 100
+    crossRailCIDR: "172.16.0.0/12"
+    deviceType: pf
+    includeDevices:
+      encapsulations:
+        - "ether"
+    gatewayResolution:
+      mode: lookup
+      lookupTable:
+        "node-1.example.com":
+          0: "172.16.1.254"
+          1: "172.17.1.254"
+          2: "172.18.1.254"
+          3: "172.19.1.254"
+          4: "172.20.1.254"
+          5: "172.21.1.254"
+          6: "172.22.1.254"
+          7: "172.23.1.254"
+        "node-2.example.com":
+          0: "172.16.2.254"
+          1: "172.17.2.254"
+          2: "172.18.2.254"
+          3: "172.19.2.254"
+          4: "172.20.2.254"
+          5: "172.21.2.254"
+          6: "172.22.2.254"
+          7: "172.23.2.254"
+    rails:
+      - subnet: "172.16.0.0/16"
+        gateway: ""
+        ipv4Prefix: "172.16."
+      - subnet: "172.17.0.0/16"
+        gateway: ""
+        ipv4Prefix: "172.17."
+      - subnet: "172.18.0.0/16"
+        gateway: ""
+        ipv4Prefix: "172.18."
+      - subnet: "172.19.0.0/16"
+        gateway: ""
+        ipv4Prefix: "172.19."
+      - subnet: "172.20.0.0/16"
+        gateway: ""
+        ipv4Prefix: "172.20."
+      - subnet: "172.21.0.0/16"
+        gateway: ""
+        ipv4Prefix: "172.21."
+      - subnet: "172.22.0.0/16"
+        gateway: ""
+        ipv4Prefix: "172.22."
+      - subnet: "172.23.0.0/16"
+        gateway: ""
+        ipv4Prefix: "172.23."

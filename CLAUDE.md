@@ -67,6 +67,10 @@ The mutation pipeline:
 
 The synthetic resource name is `dra.llm-d.io/gpu-nic-pair`. Key annotations: `dra.llm-d.io/mutated`, `dra.llm-d.io/allow-cross-numa`, `dra.llm-d.io/orphaned-at`. PCIe affinity uses `resource.kubernetes.io/pcieRoot` (Ethernet) or explicit PCIe address CEL selectors (IB). NUMA uses `dra.net/numaNode`. Transport detection uses `dra.net/encapsulation`. Extended resource interception is configured via `Config.InterceptExtendedResources` (list of `resourceName` → `deviceClassName` mappings). CEL selectors for ipv4 use `has()` guards to handle devices without the attribute.
 
+## Known DRAnet Limitations
+
+DRAnet may not expose all SR-IOV VFs in ResourceSlices when the total VF count per node is high (e.g., 160 VFs across 10 PFs × 16 VFs). Rails with VFs beyond the 128-device ResourceSlice limit show 0 VFs despite SR-IOV policies being configured. This limits CIDRPool mode to the subset of rails that have VFs in ResourceSlices. See issue #23 for investigation status.
+
 ## Testing
 
 Unit tests use Go standard `testing` package (no frameworks). E2e tests require build tag `e2e` and a running cluster with webhook+reconciler deployed and DRA drivers (gpu.nvidia.com, dranet) installed. E2e TestMain validates cluster readiness before running tests. Set `E2E_DEPLOY_OVERLAY` to auto-deploy from a kustomize overlay before tests run. CI pushes images to GHCR as `pr-<number>` for PR testing.

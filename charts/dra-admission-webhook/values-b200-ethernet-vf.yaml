@@ -1,4 +1,5 @@
-# PSAP RDU4 B200 cluster — Ethernet with CIDRPool-based VF IP assignment
+# B200 Ethernet VF mode — CIDRPool-based IP assignment with PCI prefix matching.
+# Replace CIDRPool names/namespaces and PCI prefixes with your cluster's values.
 webhook:
   replicas: 1
 
