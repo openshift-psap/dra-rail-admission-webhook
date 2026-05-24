@@ -1,34 +1,67 @@
 # B200 Ethernet VF mode — CIDRPool-based IP assignment with PCI prefix matching.
 # Replace CIDRPool names/namespaces and PCI prefixes with your cluster's values.
+
 webhook:
+  # Single replica required for VF mode — PVC is RWO (ReadWriteOnce)
   replicas: 1
 
+# PVC for IP allocator state persistence. Survives pod restarts.
+# Requires a default StorageClass or explicit storageClassName.
 webhookPvc:
   enabled: true
   storageClassName: ""
   size: 100Mi
 
 webhookConfig:
+  # "ethernet" or "infiniband". Set explicitly to avoid auto-detection issues
+  # on mixed clusters (see issue #21).
   transportMode: ethernet
+
+  # Max GPU-NIC pairs per NUMA zone (single-NUMA requests capped here)
   maxPairsPerNUMA: 4
+  # Max GPU-NIC pairs per node (cross-NUMA requests capped here)
   maxPairsPerNode: 8
+
+  # DRA DeviceClass names for GPU and NIC drivers
   gpuDeviceClassName: gpu.nvidia.com
   nicDeviceClassName: dranet
+
+  # Preflight availability check. Broken in VF mode (see issue #25) — keep false.
   preflightCheck: false
+
   nicConfig:
+    # MTU for NIC interfaces inside pods
     mtu: 9000
+    # Require RDMA capability on NIC devices
     rdmaRequired: true
+    # Prefix for NIC interface names inside pods (net0, net1, ...)
     interfacePrefix: "net"
+    # Base table ID for policy routing rules (rail N uses table startingTableId + N)
     startingTableId: 100
+    # Supernet CIDR covering all rail subnets — used for cross-rail routing
     crossRailCIDR: "172.16.0.0/12"
+
+    # Device type selection: "vf" selects SR-IOV virtual functions (isSriovVf == true),
+    # "pf" selects physical functions, "" for no preference.
     deviceType: vf
+
+    # Device filter — only consider ethernet-encapsulated devices.
+    # OR logic: device matches if it satisfies ANY criterion.
     includeDevices:
       encapsulations:
         - "ether"
+
+    # Gateway resolution mode:
+    # "static" — use rail.gateway directly
+    # "lookup" — per-node-per-rail table (see PF mode values)
+    # "cidrpool" — read from nv-ipam CIDRPool CR status
     gatewayResolution:
       mode: cidrpool
       cidrPoolConfig:
+        # How often to refresh CIDRPool cache from the API
         refreshInterval: "60s"
+        # One entry per rail — maps CIDRPool CR name to rail index.
+        # CIDRPool .status.allocations provides per-node prefix + gateway.
         pools:
           - name: cidr-rail0
             namespace: nvidia-network-operator
@@ -54,6 +87,13 @@ webhookConfig:
           - name: cidr-rail7
             namespace: nvidia-network-operator
             railIndex: 7
+
+    # Rail definitions — one per physical NIC rail.
+    # subnet: CIDR for source-based policy routing rules
+    # gateway: unused in cidrpool mode (resolved dynamically)
+    # ipv4Prefix: CEL selector prefix for PF mode (unused in VF mode)
+    # pciAddressPrefix: PCI bus prefix for VF-to-rail matching (e.g., "0000:18:" matches
+    #   VFs 0000:18:00.2, 0000:18:00.3, etc. under PF 0000:18:00.0)
     rails:
       - subnet: "172.16.0.0/16"
         gateway: ""
