@@ -455,6 +455,14 @@ func ValidateInterceptConfig(cfg Config) error {
 
 // ValidateCIDRPoolConfig validates the CIDRPool gateway resolution configuration.
 func ValidateCIDRPoolConfig(cfg Config) error {
+	// Validate gateway resolution mode
+	if cfg.NICConfig.GatewayResolution != nil {
+		mode := cfg.NICConfig.GatewayResolution.Mode
+		if mode != "" && mode != "static" && mode != "lookup" && mode != "cidrpool" {
+			return fmt.Errorf("gatewayResolution.mode must be one of: \"\", \"static\", \"lookup\", \"cidrpool\"; got %q", mode)
+		}
+	}
+
 	if !cfg.IsCIDRPoolMode() {
 		return nil
 	}

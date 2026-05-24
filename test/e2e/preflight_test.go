@@ -175,7 +175,9 @@ func waitForNICAvailability(t *testing.T, f *Framework, gpuNodes []string, maxAv
 		if data, ok := cm.Data["config.yaml"]; ok {
 			if parsed, err := webhook.ParseConfig([]byte(data)); err == nil {
 				cfg = parsed
-				totalRails = cfg.MaxPairsPerNode
+				if cfg.MaxPairsPerNode > 0 {
+					totalRails = cfg.MaxPairsPerNode
+				}
 			}
 		}
 		_ = cfg

@@ -2,11 +2,11 @@
 webhook:
   replicas: 1
   image:
-    tag: pr-1
+    tag: ""
 
 reconciler:
   image:
-    tag: pr-1
+    tag: ""
 
 webhookConfig:
   maxPairsPerNUMA: 4

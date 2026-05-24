@@ -141,10 +141,10 @@ func TestIPAllocator_ReleaseByClaimRef(t *testing.T) {
 	nodeName := "node1"
 	railIndex := 0
 
-	// Allocate 3 IPs with same claim ref
+	// Allocate 3 IPs with same claim ref on different rails (idempotent per rail+node)
 	claimRef := "same-claim"
 	for i := 0; i < 3; i++ {
-		_, err := allocator.AllocateIP(nodeName, railIndex, prefix, claimRef, nil)
+		_, err := allocator.AllocateIP(nodeName, i, prefix, claimRef, nil)
 		if err != nil {
 			t.Fatalf("Failed to allocate IP %d: %v", i+1, err)
 		}
@@ -156,13 +156,13 @@ func TestIPAllocator_ReleaseByClaimRef(t *testing.T) {
 		t.Fatalf("Failed to allocate other IP: %v", err)
 	}
 
-	// Release by claim ref
+	// Release by claim ref — should free 3 (one per rail)
 	freed := allocator.ReleaseByClaimRef(claimRef)
 	if freed != 3 {
 		t.Errorf("Expected to free 3 IPs, freed %d", freed)
 	}
 
-	// Verify state
+	// Verify state — only "other-claim" remains on rail 0
 	allocator.mu.Lock()
 	railKey := "0"
 	nodeState := allocator.state.Rails[railKey][nodeName]

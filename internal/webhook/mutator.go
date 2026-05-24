@@ -123,6 +123,9 @@ func (m *Mutator) Mutate(ctx context.Context, pod *corev1.Pod, namespace string)
 				var addresses []string
 
 				if m.Config.IsCIDRPoolMode() {
+					if m.CIDRPoolCache == nil || m.IPAllocator == nil {
+						return nil, fmt.Errorf("cidrpool mode enabled but cache or allocator not initialized")
+					}
 					alloc, ok := m.CIDRPoolCache.GetAllocation(pair.RailIndex, result.NodeName)
 					if !ok {
 						return nil, fmt.Errorf("no cidrpool allocation for node %q rail %d", result.NodeName, pair.RailIndex)
@@ -174,6 +177,9 @@ func (m *Mutator) Mutate(ctx context.Context, pod *corev1.Pod, namespace string)
 				var addresses []string
 
 				if m.Config.IsCIDRPoolMode() {
+					if m.CIDRPoolCache == nil || m.IPAllocator == nil {
+						return nil, fmt.Errorf("cidrpool mode enabled but cache or allocator not initialized")
+					}
 					alloc, ok := m.CIDRPoolCache.GetAllocation(railIdx, result.NodeName)
 					if !ok {
 						return nil, fmt.Errorf("no cidrpool allocation for node %q rail %d", result.NodeName, railIdx)

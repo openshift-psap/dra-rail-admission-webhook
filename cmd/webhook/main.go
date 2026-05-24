@@ -116,6 +116,9 @@ func main() {
 			if err != nil {
 				klog.Fatalf("Invalid cidrpool refresh interval: %v", err)
 			}
+			if d <= 0 {
+				klog.Fatalf("CIDRPool refresh interval must be > 0, got %v", d)
+			}
 			refreshInterval = d
 		}
 

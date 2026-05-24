@@ -299,19 +299,19 @@ func (r *Reconciler) reapClaim(ctx context.Context, claim *resourcev1.ResourceCl
 	klog.InfoS("Reaping orphaned ResourceClaim",
 		"namespace", claim.Namespace, "name", claim.Name)
 
+	err := r.KubeClient.ResourceV1().ResourceClaims(claim.Namespace).Delete(
+		ctx, claim.Name, metav1.DeleteOptions{})
+	if err != nil && !errors.IsNotFound(err) {
+		klog.ErrorS(err, "Failed to reap claim", "namespace", claim.Namespace, "name", claim.Name)
+		return
+	}
+
 	if r.IPAllocator != nil {
 		claimRef := fmt.Sprintf("%s/%s", claim.Namespace, claim.Name)
 		if freed := r.IPAllocator.ReleaseByClaimRef(claimRef); freed > 0 {
 			klog.InfoS("Released allocated IPs for orphaned claim",
 				"namespace", claim.Namespace, "name", claim.Name, "freed", freed)
 		}
-	}
-
-	err := r.KubeClient.ResourceV1().ResourceClaims(claim.Namespace).Delete(
-		ctx, claim.Name, metav1.DeleteOptions{})
-	if err != nil && !errors.IsNotFound(err) {
-		klog.ErrorS(err, "Failed to reap claim", "namespace", claim.Namespace, "name", claim.Name)
-		return
 	}
 
 	r.State.MarkReaped("ResourceClaim", claim.Namespace, claim.Name)

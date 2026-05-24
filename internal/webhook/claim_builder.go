@@ -96,7 +96,7 @@ func buildVFNICSelectors(railIndex int, cfg Config) []resourcev1.DeviceSelector 
 			if deviceTypeCEL != "" {
 				parts = append(parts, deviceTypeCEL)
 			}
-			parts = append(parts, fmt.Sprintf(`device.attributes["dra.net"].pciAddress.startsWith(%q)`, rail.PciAddressPrefix))
+			parts = append(parts, fmt.Sprintf(`has(device.attributes["dra.net"].pciAddress) && device.attributes["dra.net"].pciAddress.startsWith(%q)`, rail.PciAddressPrefix))
 
 			expr := parts[0]
 			for _, p := range parts[1:] {

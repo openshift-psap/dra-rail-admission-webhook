@@ -46,6 +46,7 @@ func NewIPAllocator(filePath string) (*IPAllocator, error) {
 
 // AllocateIP allocates the next available IP from the prefix for the given node and rail.
 // Returns IP in CIDR format (e.g., "172.16.1.2/24").
+// If the claimRef already has an allocation in this rail+node, returns the existing IP (idempotent).
 func (a *IPAllocator) AllocateIP(nodeName string, railIndex int, prefix string, claimRef string, reserved []string) (string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -65,6 +66,18 @@ func (a *IPAllocator) AllocateIP(nodeName string, railIndex int, prefix string, 
 			Assignments: make(map[string]string),
 		}
 		a.state.Rails[railKey][nodeName] = nodeState
+	}
+
+	// Check if this claimRef already has an allocation in this rail+node (idempotent)
+	for ip, ref := range nodeState.Assignments {
+		if ref == claimRef {
+			_, ipNet, err := net.ParseCIDR(prefix)
+			if err != nil {
+				return "", fmt.Errorf("invalid prefix %s: %w", prefix, err)
+			}
+			maskSize, _ := ipNet.Mask.Size()
+			return fmt.Sprintf("%s/%d", ip, maskSize), nil
+		}
 	}
 
 	ip, err := nextAvailableIP(prefix, nodeState.Assignments, reserved)
@@ -198,6 +211,9 @@ func (a *IPAllocator) ReconcileFromClaims(activeClaimIPs map[string]string) int 
 // save atomically writes the state to disk.
 func (a *IPAllocator) save() error {
 	dir := filepath.Dir(a.filePath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("failed to create directory %s: %w", dir, err)
+	}
 	tmpFile, err := os.CreateTemp(dir, "ip-state-*.json.tmp")
 	if err != nil {
 		return fmt.Errorf("failed to create temp file: %w", err)
