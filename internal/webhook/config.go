@@ -161,6 +161,10 @@ type NICConfig struct {
 	// "pf" for physical functions, "" for no preference.
 	// Applied in both slot scanning and CEL selectors.
 	DeviceType string `yaml:"deviceType,omitempty"`
+	// SameRailRouteMode controls routing for same-rail traffic in the policy table.
+	// "link" (default): scope-link direct delivery (L2-adjacent rails).
+	// "gateway": routed via gateway (L3-routed rails, no L2 adjacency between nodes).
+	SameRailRouteMode string `yaml:"sameRailRouteMode,omitempty"`
 }
 
 // CIDRPoolRef identifies one CIDRPool CR and its associated rail index.

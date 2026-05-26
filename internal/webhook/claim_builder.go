@@ -320,12 +320,22 @@ func buildNICParameters(nicIndex int, railIndex int, cfg Config, gateway string,
 			},
 		}
 
-		// Own subnet link-scope route in policy table
-		params.Routes = append(params.Routes, Route{
-			Destination: rail.Subnet,
-			Scope:       253,
-			Table:       tableID,
-		})
+		// Same-rail subnet route in policy table.
+		// "gateway" mode: routed via gateway (L3-routed rails, no L2 adjacency).
+		// "link" mode (default): scope-link direct delivery (L2-adjacent rails).
+		if cfg.NICConfig.SameRailRouteMode == "gateway" && gateway != "" {
+			params.Routes = append(params.Routes, Route{
+				Destination: rail.Subnet,
+				Gateway:     gateway,
+				Table:       tableID,
+			})
+		} else {
+			params.Routes = append(params.Routes, Route{
+				Destination: rail.Subnet,
+				Scope:       253,
+				Table:       tableID,
+			})
+		}
 
 		// Cross-rail supernet route
 		if cfg.NICConfig.CrossRailCIDR != "" && gateway != "" {

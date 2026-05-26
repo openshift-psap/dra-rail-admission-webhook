@@ -33,6 +33,10 @@ webhookConfig:
     # Note: allocating PFs to pods makes VFs on those PFs unusable.
     deviceType: pf
 
+    # Same-rail route mode: "link" (default, scope-link for L2-adjacent rails) or
+    # "gateway" (route via gateway for L3-routed rails with no L2 adjacency between nodes)
+    # sameRailRouteMode: gateway
+
     # Only consider ethernet-encapsulated devices
     includeDevices:
       encapsulations:

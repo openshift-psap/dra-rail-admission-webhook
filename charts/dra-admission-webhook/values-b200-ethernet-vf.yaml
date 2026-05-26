@@ -45,6 +45,10 @@ webhookConfig:
     # "pf" selects physical functions, "" for no preference.
     deviceType: vf
 
+    # Same-rail route mode: "link" (default, scope-link for L2-adjacent rails) or
+    # "gateway" (route via gateway for L3-routed rails with no L2 adjacency between nodes)
+    # sameRailRouteMode: gateway
+
     # Device filter — only consider ethernet-encapsulated devices.
     # OR logic: device matches if it satisfies ANY criterion.
     includeDevices:
