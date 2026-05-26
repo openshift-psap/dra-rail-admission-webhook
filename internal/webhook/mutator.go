@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"strconv"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
@@ -199,6 +201,15 @@ func (m *Mutator) Mutate(ctx context.Context, pod *corev1.Pod, namespace string)
 					gateway, err = m.Config.NICConfig.ResolveGateway(result.NodeName, railIdx, railGW)
 					if err != nil {
 						return nil, fmt.Errorf("failed to resolve gateway for pair %d: %w", i, err)
+					}
+					// In PF mode with crossRailCIDR, override the PF's /24 mask with the
+					// crossRailCIDR prefix length so cross-node traffic on the same rail
+					// is routable (e.g., 172.16.1.1/12 instead of 172.16.1.1/24).
+					if i < len(result.NICIPv4s) && result.NICIPv4s[i] != "" && m.Config.NICConfig.CrossRailCIDR != "" {
+						addr := rewriteAddressMask(result.NICIPv4s[i], m.Config.NICConfig.CrossRailCIDR)
+						if addr != "" {
+							addresses = []string{addr}
+						}
 					}
 				}
 
@@ -783,4 +794,23 @@ func podName(pod *corev1.Pod) string {
 // intToStr converts int to string (used in JSON patch paths).
 func intToStr(i int) string {
 	return strconv.Itoa(i)
+}
+
+// rewriteAddressMask takes a device IP (e.g., "172.16.1.1/24") and a target
+// CIDR (e.g., "172.16.0.0/12"), and returns the IP with the target's prefix
+// length (e.g., "172.16.1.1/12"). Returns "" if parsing fails.
+func rewriteAddressMask(deviceIP, targetCIDR string) string {
+	ip, _, err := net.ParseCIDR(deviceIP)
+	if err != nil {
+		ip = net.ParseIP(strings.Split(deviceIP, "/")[0])
+		if ip == nil {
+			return ""
+		}
+	}
+	_, targetNet, err := net.ParseCIDR(targetCIDR)
+	if err != nil {
+		return ""
+	}
+	maskSize, _ := targetNet.Mask.Size()
+	return fmt.Sprintf("%s/%d", ip.String(), maskSize)
 }
