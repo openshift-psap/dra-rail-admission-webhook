@@ -1,5 +1,9 @@
 # DRA GPU-NIC Admission Webhook
 
+----
+We are moving to [Composite DRA Driver](https://github.com/openshift-psap/composite-dra-driver) as the primary development target and solution.
+----
+
 A Kubernetes mutating admission webhook that converts resource requests into full [Dynamic Resource Allocation (DRA)](https://kubernetes.io/docs/concepts/scheduling-eviction/dynamic-resource-allocation/) objects, ensuring all GPU and NIC allocation is managed by a single system.
 
 Supports both **Ethernet (RoCE)** and **InfiniBand** fabrics with automatic transport detection.
