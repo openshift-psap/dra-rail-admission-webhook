@@ -1,0 +1,107 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "dra-admission-webhook.fullname" . }}
+  namespace: {{ include "dra-admission-webhook.namespace" . }}
+  labels:
+    {{- include "dra-admission-webhook.webhookLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.webhook.replicas }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "dra-admission-webhook.webhookSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "dra-admission-webhook.webhookSelectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/tls: {{ include (print $.Template.BasePath "/mutatingwebhookconfiguration.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "dra-admission-webhook.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.topologySpreadConstraints.enabled }}
+      topologySpreadConstraints:
+      - maxSkew: {{ .Values.topologySpreadConstraints.maxSkew }}
+        topologyKey: {{ .Values.topologySpreadConstraints.topologyKey }}
+        whenUnsatisfiable: {{ .Values.topologySpreadConstraints.whenUnsatisfiable }}
+        labelSelector:
+          matchLabels:
+            {{- include "dra-admission-webhook.webhookSelectorLabels" . | nindent 12 }}
+      {{- end }}
+      containers:
+      - name: webhook
+        image: {{ include "dra-admission-webhook.webhookImage" . }}
+        imagePullPolicy: {{ .Values.webhook.image.pullPolicy }}
+        args:
+        - --port={{ .Values.webhook.port }}
+        - --cert-dir=/certs
+        - --config-namespace={{ include "dra-admission-webhook.namespace" . }}
+        - --config-name={{ include "dra-admission-webhook.configmapName" . }}
+        {{- range .Values.webhook.extraArgs }}
+        - {{ . }}
+        {{- end }}
+        ports:
+        - containerPort: {{ .Values.webhook.port }}
+          name: https
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: {{ .Values.webhook.port }}
+            scheme: HTTPS
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: {{ .Values.webhook.port }}
+            scheme: HTTPS
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        volumeMounts:
+        - name: tls-certs
+          mountPath: /certs
+          readOnly: true
+        {{- if .Values.webhookPvc.enabled }}
+        - name: data
+          mountPath: /data
+        {{- end }}
+        resources:
+          {{- toYaml .Values.webhook.resources | nindent 10 }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          capabilities:
+            drop:
+            - ALL
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+      - name: tls-certs
+        secret:
+          secretName: {{ include "dra-admission-webhook.tlsSecretName" . }}
+      {{- if .Values.webhookPvc.enabled }}
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ include "dra-admission-webhook.fullname" . }}-webhook-data
+      {{- end }}

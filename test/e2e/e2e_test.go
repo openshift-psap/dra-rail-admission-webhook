@@ -191,4 +191,5 @@ func TestE2E(t *testing.T) {
 	t.Run("05_EdgeCases", testEdgeCases)
 	t.Run("06_Interception", testInterception)
 	t.Run("07_InterceptionExt", testInterceptionExt)
+	t.Run("08_VFMode", testVFMode)
 }

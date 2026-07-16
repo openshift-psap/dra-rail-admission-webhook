@@ -1,0 +1,95 @@
+{{- $ns := include "dra-admission-webhook.namespace" . -}}
+{{- $svcName := include "dra-admission-webhook.serviceName" . -}}
+{{- $caBundle := "" -}}
+{{- $certs := dict -}}
+{{- if eq .Values.tls.mode "helm-generated" -}}
+  {{- $certs = include "dra-admission-webhook.tlsCerts" . | fromJson -}}
+  {{- $caBundle = $certs.ca | b64enc -}}
+{{- else if eq .Values.tls.mode "manual" -}}
+  {{- $caBundle = .Values.tls.caBundle -}}
+{{- end -}}
+{{- /* --- TLS Secret (helm-generated mode) --- */ -}}
+{{- if eq .Values.tls.mode "helm-generated" }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "dra-admission-webhook.tlsSecretName" . }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "dra-admission-webhook.labels" . | nindent 4 }}
+type: kubernetes.io/tls
+data:
+  tls.crt: {{ $certs.crt | b64enc }}
+  tls.key: {{ $certs.key | b64enc }}
+  ca.crt: {{ $certs.ca | b64enc }}
+{{- end }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: {{ include "dra-admission-webhook.fullname" . }}
+  labels:
+    {{- include "dra-admission-webhook.labels" . | nindent 4 }}
+  {{- if eq .Values.tls.mode "cert-manager" }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ $ns }}/{{ include "dra-admission-webhook.fullname" . }}-tls
+  {{- end }}
+webhooks:
+- name: gpu-nic-pairs.dra.llm-d.io
+  admissionReviewVersions: ["v1"]
+  sideEffects: NoneOnDryRun
+  clientConfig:
+    service:
+      name: {{ $svcName }}
+      namespace: {{ $ns }}
+      path: /mutate
+      port: 443
+    {{- if ne .Values.tls.mode "cert-manager" }}
+    caBundle: {{ $caBundle }}
+    {{- end }}
+  rules:
+  - operations: ["CREATE"]
+    apiGroups: [""]
+    apiVersions: ["v1"]
+    resources: ["pods"]
+  namespaceSelector:
+    {{- toYaml .Values.mutatingWebhook.mutate.namespaceSelector | nindent 4 }}
+  failurePolicy: {{ .Values.mutatingWebhook.mutate.failurePolicy }}
+  reinvocationPolicy: {{ .Values.mutatingWebhook.mutate.reinvocationPolicy }}
+  timeoutSeconds: {{ .Values.mutatingWebhook.mutate.timeoutSeconds }}
+{{- if .Values.mutatingWebhook.mutateExt.enabled }}
+- name: ext-resources.dra.llm-d.io
+  admissionReviewVersions: ["v1"]
+  sideEffects: NoneOnDryRun
+  clientConfig:
+    service:
+      name: {{ $svcName }}
+      namespace: {{ $ns }}
+      path: /mutate-ext
+      port: 443
+    {{- if ne .Values.tls.mode "cert-manager" }}
+    caBundle: {{ $caBundle }}
+    {{- end }}
+  rules:
+  - operations: ["CREATE"]
+    apiGroups: [""]
+    apiVersions: ["v1"]
+    resources: ["pods"]
+  namespaceSelector:
+    matchExpressions:
+    {{- $allExcluded := list }}
+    {{- $allExcluded = concat $allExcluded .Values.mutatingWebhook.mutateExt.excludedNamespaces.kubernetes }}
+    {{- $allExcluded = concat $allExcluded .Values.mutatingWebhook.mutateExt.excludedNamespaces.openshift }}
+    {{- $allExcluded = concat $allExcluded .Values.mutatingWebhook.mutateExt.excludedNamespaces.nvidia }}
+    {{- $allExcluded = concat $allExcluded .Values.mutatingWebhook.mutateExt.excludedNamespaces.custom }}
+    - key: kubernetes.io/metadata.name
+      operator: NotIn
+      values:
+      {{- range $allExcluded }}
+      - {{ . | quote }}
+      {{- end }}
+  failurePolicy: {{ .Values.mutatingWebhook.mutateExt.failurePolicy }}
+  reinvocationPolicy: {{ .Values.mutatingWebhook.mutateExt.reinvocationPolicy }}
+  timeoutSeconds: {{ .Values.mutatingWebhook.mutateExt.timeoutSeconds }}
+{{- end }}

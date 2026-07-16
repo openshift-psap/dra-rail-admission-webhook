@@ -1,0 +1,99 @@
+# B200 Ethernet PF mode — IPv4 prefix matching with per-node gateway lookup.
+# Replace node FQDNs and gateway IPs with your cluster's values.
+
+webhook:
+  # Can run 2 replicas in PF mode (no PVC needed)
+  replicas: 1
+
+webhookConfig:
+  # "ethernet" or "infiniband". Set explicitly to avoid auto-detection issues
+  # on mixed clusters (see issue #21).
+  transportMode: ethernet
+
+  # Max GPU-NIC pairs per NUMA zone / per node
+  maxPairsPerNUMA: 4
+  maxPairsPerNode: 8
+
+  # DRA DeviceClass names
+  gpuDeviceClassName: gpu.nvidia.com
+  nicDeviceClassName: dranet
+
+  # Preflight availability check — works in PF mode
+  preflightCheck: false
+
+  nicConfig:
+    mtu: 9000
+    rdmaRequired: true
+    interfacePrefix: "net"
+    startingTableId: 100
+    # Supernet CIDR covering all rail subnets
+    crossRailCIDR: "172.16.0.0/12"
+
+    # "pf" selects physical functions only (excludes VFs via !has(isSriovVf)).
+    # Note: allocating PFs to pods makes VFs on those PFs unusable.
+    deviceType: pf
+
+    # Same-rail route mode: "link" (default, scope-link for L2-adjacent rails) or
+    # "gateway" (route via gateway for L3-routed rails with no L2 adjacency between nodes)
+    # sameRailRouteMode: gateway
+
+    # Only consider ethernet-encapsulated devices
+    includeDevices:
+      encapsulations:
+        - "ether"
+
+    # Per-node-per-rail gateway lookup table.
+    # Keys are node FQDNs (must match node.metadata.name exactly).
+    # Values map rail index (as string for YAML compat) to gateway IP.
+    gatewayResolution:
+      mode: lookup
+      lookupTable:
+        "node-1.example.com":
+          0: "172.16.1.254"
+          1: "172.17.1.254"
+          2: "172.18.1.254"
+          3: "172.19.1.254"
+          4: "172.20.1.254"
+          5: "172.21.1.254"
+          6: "172.22.1.254"
+          7: "172.23.1.254"
+        "node-2.example.com":
+          0: "172.16.2.254"
+          1: "172.17.2.254"
+          2: "172.18.2.254"
+          3: "172.19.2.254"
+          4: "172.20.2.254"
+          5: "172.21.2.254"
+          6: "172.22.2.254"
+          7: "172.23.2.254"
+
+    # Rail definitions — one per physical NIC rail.
+    # subnet: CIDR for source-based policy routing rules
+    # gateway: unused when gatewayResolution.mode is "lookup" (resolved per-node)
+    # ipv4Prefix: CEL selector prefix — matches PF IPv4 (e.g., "172.16." matches 172.16.1.1/24)
+    # pciAddressPrefix: not needed in PF mode (PFs matched by IPv4)
+    rails:
+      - subnet: "172.16.0.0/16"
+        gateway: ""
+        ipv4Prefix: "172.16."
+      - subnet: "172.17.0.0/16"
+        gateway: ""
+        ipv4Prefix: "172.17."
+      - subnet: "172.18.0.0/16"
+        gateway: ""
+        ipv4Prefix: "172.18."
+      - subnet: "172.19.0.0/16"
+        gateway: ""
+        ipv4Prefix: "172.19."
+      - subnet: "172.20.0.0/16"
+        gateway: ""
+        ipv4Prefix: "172.20."
+      - subnet: "172.21.0.0/16"
+        gateway: ""
+        ipv4Prefix: "172.21."
+      - subnet: "172.22.0.0/16"
+        gateway: ""
+        ipv4Prefix: "172.22."
+      - subnet: "172.23.0.0/16"
+        gateway: ""
+        ipv4Prefix: "172.23."

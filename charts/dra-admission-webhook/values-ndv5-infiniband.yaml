@@ -1,0 +1,56 @@
+# NDv5 InfiniBand cluster — GPU-NIC pairing by PCI address, IB fabric handles routing.
+
+webhook:
+  replicas: 1
+  image:
+    # Empty tag defaults to Chart.appVersion
+    tag: ""
+
+reconciler:
+  image:
+    tag: ""
+
+webhookConfig:
+  maxPairsPerNUMA: 4
+  maxPairsPerNode: 8
+  gpuDeviceClassName: gpu.nvidia.com
+  nicDeviceClassName: dranet
+
+  # "auto" detects from ResourceSlice encapsulation attributes.
+  # Set "infiniband" explicitly on mixed IB+ethernet clusters.
+  transportMode: auto
+
+  preflightCheck: false
+
+  nicConfig:
+    # IPoIB MTU (lower than ethernet 9000)
+    mtu: 2044
+    rdmaRequired: true
+    interfacePrefix: "net"
+    startingTableId: 100
+
+    # No cross-rail routing on IB — fabric handles forwarding
+    crossRailCIDR: ""
+    # No ethernet rails
+    rails: []
+
+    # InfiniBand rail definitions — each entry pins a GPU to a NIC by PCI address.
+    # List index is the rail index. gpu/nic values are exact PCI bus IDs from
+    # the cluster's device topology.
+    ibRails:
+      - gpu: "0001:00:00.0"
+        nic: "0101:00:00.0"
+      - gpu: "0002:00:00.0"
+        nic: "0102:00:00.0"
+      - gpu: "0003:00:00.0"
+        nic: "0103:00:00.0"
+      - gpu: "0008:00:00.0"
+        nic: "0104:00:00.0"
+      - gpu: "0009:00:00.0"
+        nic: "0105:00:00.0"
+      - gpu: "000a:00:00.0"
+        nic: "0106:00:00.0"
+      - gpu: "000b:00:00.0"
+        nic: "0107:00:00.0"
+      - gpu: "000c:00:00.0"
+        nic: "0108:00:00.0"

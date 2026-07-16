@@ -32,6 +32,17 @@ const (
 	// NICPCIAddressAttribute is the DRA device attribute for NIC PCI bus address.
 	NICPCIAddressAttribute = "dra.net/pciAddress"
 
+	// NICIfNameAttribute is the DRA device attribute for NIC interface name.
+	NICIfNameAttribute = "dra.net/ifName"
+
+	// NICSRIOVAttribute is the DRA device attribute indicating SR-IOV capability.
+	// true = PF (can create VFs), false = not SR-IOV capable.
+	NICSRIOVAttribute = "dra.net/sriov"
+
+	// NICIsSriovVfAttribute is the DRA device attribute identifying actual SR-IOV
+	// virtual functions. Only present on VFs (true). Absent on PFs and non-SR-IOV devices.
+	NICIsSriovVfAttribute = "dra.net/isSriovVf"
+
 	// GPUPCIBusIDAttribute is the DRA device attribute for GPU PCI bus ID.
 	GPUPCIBusIDAttribute = "resource.kubernetes.io/pciBusID"
 

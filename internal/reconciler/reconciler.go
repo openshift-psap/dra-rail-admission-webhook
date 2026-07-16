@@ -25,9 +25,10 @@ const (
 
 // Reconciler detects and optionally reaps orphaned DRA resources.
 type Reconciler struct {
-	KubeClient kubernetes.Interface
-	State      *StateManager
-	Config     Config
+	KubeClient  kubernetes.Interface
+	State       *StateManager
+	Config      Config
+	IPAllocator *webhook.IPAllocator // optional; set when cidrpool mode is active
 }
 
 // Run starts the reconciliation loop. It blocks until the context is cancelled.
@@ -303,6 +304,14 @@ func (r *Reconciler) reapClaim(ctx context.Context, claim *resourcev1.ResourceCl
 	if err != nil && !errors.IsNotFound(err) {
 		klog.ErrorS(err, "Failed to reap claim", "namespace", claim.Namespace, "name", claim.Name)
 		return
+	}
+
+	if r.IPAllocator != nil {
+		claimRef := fmt.Sprintf("%s/%s", claim.Namespace, claim.Name)
+		if freed := r.IPAllocator.ReleaseByClaimRef(claimRef); freed > 0 {
+			klog.InfoS("Released allocated IPs for orphaned claim",
+				"namespace", claim.Namespace, "name", claim.Name, "freed", freed)
+		}
 	}
 
 	r.State.MarkReaped("ResourceClaim", claim.Namespace, claim.Name)

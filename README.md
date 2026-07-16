@@ -64,16 +64,21 @@ On pod creation, the webhook:
 
 ```bash
 make build                               # Build all binaries
-make deploy NAMESPACE=dra-webhook-system  # Generate TLS certs + deploy
 make test                                # Run unit tests
+
+# Deploy with Helm (preferred)
+helm install dra charts/dra-admission-webhook/ -n dra-webhook-system --create-namespace
+
+# Deploy with cluster-specific values
+helm install dra charts/dra-admission-webhook/ -f charts/dra-admission-webhook/values-aks-ndv5.yaml
 ```
 
-See [docs/setup-guide.md](docs/setup-guide.md) for full setup instructions, kustomize overlays, and E2E testing.
+See [docs/setup-guide.md](docs/setup-guide.md) for full setup instructions, Helm values, and E2E testing.
 
 ## Documentation
 
 - [User Guide](docs/user-guide.md) — configuration reference, resource types, valid counts, transport modes, interception
-- [Setup Guide](docs/setup-guide.md) — prerequisites, deployment, overlays, testing, NRI configuration
+- [Setup Guide](docs/setup-guide.md) — prerequisites, deployment, Helm values, testing, NRI configuration
 
 ## Project Layout
 
@@ -86,11 +91,11 @@ internal/
   webhook/          Core logic: config, validation, mutation, preflight, claim building
   reconciler/       Orphan detection and cleanup
   dryrun/           Cluster state capture and allocation simulation
-deploy/
-  base/             Canonical Kustomize manifests
-  overlays/         Cluster-specific overlays (AKS, etc.)
-test/e2e/           End-to-end test suite
-docs/               User-facing documentation
+charts/
+  dra-admission-webhook/   Helm chart (values.yaml, cluster-specific values files)
+deploy/                    Kustomize manifests (DEPRECATED — will be removed in the next release)
+test/e2e/                  End-to-end test suite
+docs/                      User-facing documentation
 ```
 
 ## CI

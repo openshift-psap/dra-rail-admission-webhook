@@ -17,3 +17,6 @@ certs/
 .vscode/
 *.swp
 *.swo
+
+# Local helper scripts
+test/manual/

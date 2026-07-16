@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
@@ -97,12 +98,53 @@ func main() {
 	// Create cluster-level allocator
 	allocator := webhook.NewAllocator(kubeClient.ResourceV1(), kubeClient, cfg)
 
+	// CIDRPool mode: initialize cache and IP allocator
+	var cidrpoolCache *webhook.CIDRPoolCache
+	var ipAllocator *webhook.IPAllocator
+
+	if cfg.IsCIDRPoolMode() {
+		dynClient, err := dynamic.NewForConfig(restConfig)
+		if err != nil {
+			klog.Fatalf("Failed to create dynamic client for CIDRPool: %v", err)
+		}
+
+		cidrpoolCache = webhook.NewCIDRPoolCache(dynClient, cfg.NICConfig.GatewayResolution.CIDRPoolConfig.Pools)
+
+		refreshInterval := 60 * time.Second
+		if cfg.NICConfig.GatewayResolution.CIDRPoolConfig.RefreshInterval != "" {
+			d, err := time.ParseDuration(cfg.NICConfig.GatewayResolution.CIDRPoolConfig.RefreshInterval)
+			if err != nil {
+				klog.Fatalf("Invalid cidrpool refresh interval: %v", err)
+			}
+			if d <= 0 {
+				klog.Fatalf("CIDRPool refresh interval must be > 0, got %v", d)
+			}
+			refreshInterval = d
+		}
+
+		if err := cidrpoolCache.Start(ctx, refreshInterval); err != nil {
+			klog.Fatalf("Failed to start CIDRPool cache: %v", err)
+		}
+		defer cidrpoolCache.Stop()
+
+		ipAllocator, err = webhook.NewIPAllocator("/data/webhook-ip-state.json")
+		if err != nil {
+			klog.Fatalf("Failed to create IP allocator: %v", err)
+		}
+
+		klog.InfoS("CIDRPool mode enabled",
+			"pools", len(cfg.NICConfig.GatewayResolution.CIDRPoolConfig.Pools),
+			"refreshInterval", refreshInterval)
+	}
+
 	// Create mutator
 	mutator := &webhook.Mutator{
 		KubeClient:     kubeClient,
 		ResourceClient: kubeClient.ResourceV1(),
 		Config:         cfg,
 		Allocator:      allocator,
+		CIDRPoolCache:  cidrpoolCache,
+		IPAllocator:    ipAllocator,
 	}
 
 	// Create priority queue for rail-aware mutation ordering.

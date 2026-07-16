@@ -1,0 +1,13 @@
+apiVersion: v2
+name: dra-admission-webhook
+description: DRA GPU-NIC pair mutating admission webhook and reconciler
+type: application
+version: 0.1.0
+appVersion: "main"
+keywords:
+  - dra
+  - gpu
+  - nic
+  - admission-webhook
+  - kubernetes
+home: https://github.com/openshift-psap/dra-rail-admission-webhook

@@ -262,6 +262,25 @@ func WaitForDeploymentReady(t *testing.T, f *Framework, namespace, name string, 
 	})
 }
 
+// WaitForWebhookEndpoints waits until the webhook service has at least one ready endpoint.
+// Deployment readiness alone is insufficient — the Endpoints object may lag behind.
+func WaitForWebhookEndpoints(t *testing.T, f *Framework, timeout time.Duration) {
+	t.Helper()
+	svcName := webhookDeployment
+	WaitForCondition(t, timeout, fmt.Sprintf("service %s/%s to have endpoints", f.WebhookNS, svcName), func() bool {
+		ep, err := f.KubeClient.CoreV1().Endpoints(f.WebhookNS).Get(context.Background(), svcName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+		for _, sub := range ep.Subsets {
+			if len(sub.Addresses) > 0 {
+				return true
+			}
+		}
+		return false
+	})
+}
+
 // WaitForCondition polls condFn every 2 seconds until it returns true or timeout.
 func WaitForCondition(t *testing.T, timeout time.Duration, desc string, condFn func() bool) {
 	t.Helper()
@@ -552,6 +571,7 @@ func EnableInterception(t *testing.T, f *Framework, resources []map[string]inter
 		"interceptExtendedResources": resources,
 	})
 	RestartAndWait(t, f, f.WebhookNS, webhookDeployment, 120*time.Second)
+	WaitForWebhookEndpoints(t, f, 60*time.Second)
 	t.Log("Webhook restarted with interception enabled")
 }
 
@@ -562,6 +582,7 @@ func DisableInterception(t *testing.T, f *Framework) {
 		"interceptExtendedResources": []interface{}{},
 	})
 	RestartAndWait(t, f, f.WebhookNS, webhookDeployment, 120*time.Second)
+	WaitForWebhookEndpoints(t, f, 60*time.Second)
 	t.Log("Webhook restarted with interception disabled")
 }
 

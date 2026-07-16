@@ -96,7 +96,7 @@ When a pod with `dra.llm-d.io/gpu-nic-pair` is created, the webhook:
 
 ## Configuration Reference
 
-All configuration is loaded from a ConfigMap (`deploy/base/configmap.yaml`). The webhook loads config at startup and requires a restart to pick up changes.
+All configuration is loaded from a ConfigMap. When using Helm, config is set via the `webhookConfig` block in `values.yaml` (see `charts/dra-admission-webhook/values.yaml`). The webhook loads config at startup; Helm upgrades with config changes trigger automatic restarts.
 
 ### Ethernet (RoCE)
 

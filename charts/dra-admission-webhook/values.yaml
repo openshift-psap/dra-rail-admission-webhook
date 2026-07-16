@@ -1,0 +1,258 @@
+# -- Override chart name
+nameOverride: ""
+# -- Override full release name
+fullnameOverride: ""
+
+# -- Create a Namespace resource (set false when namespace already exists)
+createNamespace: true
+# -- Target namespace
+namespace: dra-webhook-system
+
+# ============================================================
+#  Images
+# ============================================================
+webhook:
+  image:
+    repository: ghcr.io/openshift-psap/dra-rail-admission-webhook/webhook
+    tag: ""  # defaults to Chart.appVersion
+    pullPolicy: Always
+  replicas: 2
+  port: 8443
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+  extraArgs: []
+
+reconciler:
+  image:
+    repository: ghcr.io/openshift-psap/dra-rail-admission-webhook/reconciler
+    tag: ""  # defaults to Chart.appVersion
+    pullPolicy: Always
+  replicas: 1
+  healthPort: 8080
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+  extraArgs: []
+
+imagePullSecrets: []
+
+# ============================================================
+#  TLS
+# ============================================================
+tls:
+  # -- "helm-generated" | "cert-manager" | "manual"
+  # helm-generated: Helm creates self-signed CA + cert via genCA/genSignedCert.
+  #                 Certs persist across upgrades via lookup. Zero dependencies.
+  # cert-manager:   Creates a Certificate CR. cert-manager's cainjector handles caBundle.
+  # manual:         User creates TLS secret before install. Set caBundle below.
+  mode: helm-generated
+
+  secretName: dra-gpu-nic-webhook-tls
+
+  certManager:
+    issuerRef:
+      name: ""
+      kind: Issuer
+      group: cert-manager.io
+    duration: 8760h
+    renewBefore: 720h
+
+  # -- Base64-encoded CA bundle (manual mode only)
+  caBundle: ""
+
+# ============================================================
+#  Webhook Configuration (becomes config.yaml in ConfigMap)
+# ============================================================
+# This block is serialized as-is via toYaml. Must match the Go Config struct.
+# Cluster-specific values files should provide the FULL webhookConfig block
+# (not partial overrides) to avoid inheriting unwanted sibling keys.
+# Helm deep-merges maps, so explicitly null out keys you don't want:
+# e.g., set rails: [] and crossRailCIDR: "" when using ibRails instead.
+webhookConfig:
+  maxPairsPerNUMA: 4
+  maxPairsPerNode: 8
+  gpuDeviceClassName: gpu.nvidia.com
+  nicDeviceClassName: dranet
+  preflightCheck: false
+  nicConfig:
+    mtu: 9000
+    rdmaRequired: true
+    interfacePrefix: "net"
+    startingTableId: 100
+    crossRailCIDR: "10.0.0.0/13"
+    rails:
+      - subnet: "10.0.0.0/16"
+        gateway: "10.0.0.1"
+        ipv4Prefix: "10.0."
+      - subnet: "10.1.0.0/16"
+        gateway: "10.1.0.1"
+        ipv4Prefix: "10.1."
+      - subnet: "10.2.0.0/16"
+        gateway: "10.2.0.1"
+        ipv4Prefix: "10.2."
+      - subnet: "10.3.0.0/16"
+        gateway: "10.3.0.1"
+        ipv4Prefix: "10.3."
+      - subnet: "10.4.0.0/16"
+        gateway: "10.4.0.1"
+        ipv4Prefix: "10.4."
+      - subnet: "10.5.0.0/16"
+        gateway: "10.5.0.1"
+        ipv4Prefix: "10.5."
+      - subnet: "10.6.0.0/16"
+        gateway: "10.6.0.1"
+        ipv4Prefix: "10.6."
+      - subnet: "10.7.0.0/16"
+        gateway: "10.7.0.1"
+        ipv4Prefix: "10.7."
+  # Gateway resolution mode. "static" (default) uses RailConfig.Gateway.
+  # "lookup" resolves per-node-per-rail from a lookup table, erroring if
+  # the node/rail is missing. Use for clusters with per-node gateways.
+  #
+  # gatewayResolution:
+  #   mode: static           # default — uses RailConfig.Gateway
+  #   # mode: lookup         # per-node-per-rail gateway table
+  #   # lookupTable:
+  #   #   "node-1":
+  #   #     0: "172.16.1.254"
+  #   #     1: "172.17.1.254"
+  #   #   "node-2":
+  #   #     0: "172.16.2.254"
+
+  # Filter NIC devices for GPU-NIC pairing. Include narrows the candidate
+  # set (omit = all devices). Exclude removes from the included set.
+  # A device matching ANY criterion within a filter is affected.
+  #
+  # includeDevices:
+  #   encapsulations:        # dra.net/encapsulation exact match
+  #     - "ether"
+  #   pciAddressPrefixes:    # dra.net/pciAddress prefix match
+  #     - "0000:18:"
+  #   ifNamePrefixes:        # dra.net/ifName prefix match
+  #     - "ens"
+  #   pcieRoots:             # resource.kubernetes.io/pcieRoot exact match
+  #     - "pci0000:15"
+  #   sriov: true            # dra.net/sriov boolean — true restricts to PFs
+  #
+  # excludeDevices:
+  #   encapsulations:
+  #     - "infiniband"
+  #   ifNamePrefixes:
+  #     - "mgmt"
+
+  # Enable extended resource interception to convert legacy resource requests
+  # (e.g., nvidia.com/gpu) into DRA ResourceClaims. The webhook strips the
+  # extended resource from the pod spec and creates a DRA claim instead.
+  # Works cluster-wide via /mutate-ext without namespace labeling.
+  # Not needed on K8s >= 1.35 with DRAExtendedResource feature gate.
+  #
+  # To enable:
+  #   helm install dra charts/dra-admission-webhook/ \
+  #     --set 'webhookConfig.interceptExtendedResources[0].resourceName=nvidia.com/gpu' \
+  #     --set 'webhookConfig.interceptExtendedResources[0].deviceClassName=gpu.nvidia.com'
+  #
+  # interceptExtendedResources:
+  #   - resourceName: "nvidia.com/gpu"
+  #     deviceClassName: "gpu.nvidia.com"
+
+# ============================================================
+#  Reconciler Configuration (becomes reconciler.yaml in ConfigMap)
+# ============================================================
+reconcilerConfig:
+  interval: "5m"
+  autoReap: false
+  gracePeriod: "10m"
+  pruneAfter: "168h"
+  statePath: "/data/reconciler-state.json"
+
+# ============================================================
+#  Webhook PVC (IP allocator state for cidrpool mode)
+# ============================================================
+webhookPvc:
+  enabled: false
+  storageClassName: ""
+  size: 100Mi
+  accessModes:
+    - ReadWriteOnce
+
+#  Reconciler PVC
+# ============================================================
+reconcilerPvc:
+  enabled: true
+  storageClassName: ""
+  size: 100Mi
+  accessModes:
+    - ReadWriteOnce
+
+# ============================================================
+#  PodDisruptionBudget
+# ============================================================
+pdb:
+  enabled: true
+  minAvailable: 1
+
+# ============================================================
+#  MutatingWebhookConfiguration
+# ============================================================
+mutatingWebhook:
+  mutate:
+    failurePolicy: Fail
+    timeoutSeconds: 10
+    reinvocationPolicy: IfNeeded
+    namespaceSelector:
+      matchLabels:
+        dra.llm-d.io/webhook-enabled: "true"
+
+  mutateExt:
+    enabled: true
+    failurePolicy: Ignore
+    timeoutSeconds: 10
+    reinvocationPolicy: IfNeeded
+    excludedNamespaces:
+      kubernetes:
+        - kube-system
+        - kube-public
+        - kube-node-lease
+      openshift:
+        - openshift-apiserver
+        - openshift-controller-manager
+        - openshift-etcd
+        - openshift-kube-apiserver
+        - openshift-kube-controller-manager
+        - openshift-kube-scheduler
+        - openshift-machine-api
+        - openshift-machine-config-operator
+        - openshift-monitoring
+        - openshift-network-operator
+        - openshift-sdn
+        - openshift-ovn-kubernetes
+      nvidia:
+        - nvidia-gpu-operator
+        - nvidia-network-operator
+      custom: []
+
+# ============================================================
+#  Topology Spread
+# ============================================================
+topologySpreadConstraints:
+  enabled: true
+  maxSkew: 1
+  topologyKey: kubernetes.io/hostname
+  whenUnsatisfiable: DoNotSchedule
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+serviceAccount:
+  annotations: {}

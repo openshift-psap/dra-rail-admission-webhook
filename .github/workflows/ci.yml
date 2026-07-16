@@ -69,6 +69,29 @@ jobs:
         with:
           version: latest
 
+  helm-lint:
+    name: Helm Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+
+      - name: Lint default values
+        run: helm lint charts/dra-admission-webhook/
+
+      - name: Lint NDv5 InfiniBand values
+        run: helm lint charts/dra-admission-webhook/ -f charts/dra-admission-webhook/values-ndv5-infiniband.yaml
+
+      - name: Lint B200 Ethernet VF values
+        run: helm lint charts/dra-admission-webhook/ -f charts/dra-admission-webhook/values-b200-ethernet-vf.yaml
+
+      - name: Lint B200 Ethernet PF values
+        run: helm lint charts/dra-admission-webhook/ -f charts/dra-admission-webhook/values-b200-ethernet-pf.yaml
+
+      - name: Template renders without errors
+        run: helm template test charts/dra-admission-webhook/
+
   docker-build:
     name: Docker Build & Push
     needs: [build, test, vet, lint]

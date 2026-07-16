@@ -1,0 +1,18 @@
+{{- if .Values.reconcilerPvc.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "dra-admission-webhook.fullname" . }}-reconciler-state
+  namespace: {{ include "dra-admission-webhook.namespace" . }}
+  labels:
+    {{- include "dra-admission-webhook.reconcilerLabels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.reconcilerPvc.accessModes | nindent 4 }}
+  {{- if .Values.reconcilerPvc.storageClassName }}
+  storageClassName: {{ .Values.reconcilerPvc.storageClassName | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.reconcilerPvc.size }}
+{{- end }}

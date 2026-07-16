@@ -30,6 +30,7 @@ type NICSlot struct {
 type AllocationResult struct {
 	NodeName    string
 	RailIndices []int
+	NICIPv4s    []string // parallel to RailIndices
 }
 
 // ExplicitAllocationResult is returned by AllocateExplicit with the selected
@@ -156,6 +157,16 @@ func (a *Allocator) Allocate(ctx context.Context, pod *corev1.Pod, namespace str
 		if len(rails) >= count {
 			selected := rails[:count]
 
+			// Build rail→IPv4 map from slots for this node
+			railIPv4 := make(map[int]string, len(slots))
+			for _, s := range slots {
+				railIPv4[s.RailIndex] = s.IPv4
+			}
+			ipv4s := make([]string, len(selected))
+			for i, rail := range selected {
+				ipv4s[i] = railIPv4[rail]
+			}
+
 			// Mark as pending so subsequent requests don't double-book
 			now := time.Now()
 			for _, rail := range selected {
@@ -168,6 +179,7 @@ func (a *Allocator) Allocate(ctx context.Context, pod *corev1.Pod, namespace str
 			return &AllocationResult{
 				NodeName:    nodeName,
 				RailIndices: selected,
+				NICIPv4s:    ipv4s,
 			}, nil
 		}
 	}
@@ -373,6 +385,10 @@ func (a *Allocator) scanExplicitAvailability(ctx context.Context, poolMapping *N
 		driver := slice.Spec.Driver
 
 		for _, device := range slice.Spec.Devices {
+			if driver == "dra.net" && !a.Config.NICConfig.IsDeviceAllowed(device) {
+				continue
+			}
+
 			for role, sel := range a.Config.PairingConfig.DeviceSelectors {
 				if driver != sel.DriverName() {
 					continue
@@ -557,6 +573,9 @@ func (a *Allocator) scanAvailableSlots(ctx context.Context) (map[string][]NICSlo
 	if a.Config.IsInfiniBand() {
 		return a.scanIBSlots(ctx)
 	}
+	if a.Config.IsCIDRPoolMode() {
+		return a.scanEthernetSlotsVF(ctx)
+	}
 	return a.scanEthernetSlots(ctx)
 }
 
@@ -586,6 +605,10 @@ func (a *Allocator) scanEthernetSlots(ctx context.Context) (map[string][]NICSlot
 		}
 
 		for _, device := range slice.Spec.Devices {
+			if !a.Config.NICConfig.IsDeviceAllowed(device) {
+				continue
+			}
+
 			ipv4 := getIPv4(device)
 			if ipv4 == "" {
 				continue
@@ -616,6 +639,90 @@ func (a *Allocator) scanEthernetSlots(ctx context.Context) (map[string][]NICSlot
 				RailIndex: railIdx,
 				NUMAZone:  numa,
 				IPv4:      ipv4,
+			})
+		}
+	}
+
+	return nodeSlots, nil
+}
+
+// scanEthernetSlotsVF discovers available VF NIC slots in CIDRPool mode.
+// Unlike scanEthernetSlots, this does NOT require dra.net/ipv4 (VFs lack it).
+// Matches devices by checking if dra.net/pciAddress starts with configured PciAddressPrefix.
+// Returns NICSlot with IPv4="" (IP assignment handled separately by IP allocator).
+func (a *Allocator) scanEthernetSlotsVF(ctx context.Context) (map[string][]NICSlot, error) {
+	slices, err := a.ResourceClient.ResourceSlices().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list resource slices: %w", err)
+	}
+
+	prefixToRail := make(map[string]int, len(a.Config.NICConfig.Rails))
+	for i, rail := range a.Config.NICConfig.Rails {
+		prefixToRail[rail.PciAddressPrefix] = i
+	}
+
+	nodeSlots := make(map[string][]NICSlot)
+
+	for _, slice := range slices.Items {
+		if slice.Spec.Driver != "dra.net" {
+			continue
+		}
+		nodeName := ""
+		if slice.Spec.NodeName != nil {
+			nodeName = *slice.Spec.NodeName
+		}
+		if nodeName == "" {
+			continue
+		}
+
+		for _, device := range slice.Spec.Devices {
+			if !a.Config.NICConfig.IsDeviceAllowed(device) {
+				continue
+			}
+
+			pciAddr := getPCIAddress(device)
+			if pciAddr == "" {
+				continue
+			}
+
+			// Filter by deviceType using isSriovVf attribute:
+			// "vf" requires isSriovVf==true, "pf" requires isSriovVf absent or false
+			if a.Config.NICConfig.DeviceType != "" {
+				vfAttr, hasVfAttr := device.Attributes[resourcev1.QualifiedName(NICIsSriovVfAttribute)]
+				isVF := hasVfAttr && vfAttr.BoolValue != nil && *vfAttr.BoolValue
+				if a.Config.NICConfig.DeviceType == "vf" && !isVF {
+					continue
+				}
+				if a.Config.NICConfig.DeviceType == "pf" && isVF {
+					continue
+				}
+			}
+
+			if a.Config.NICConfig.RDMARequired {
+				rdmaAttr, ok := device.Attributes[resourcev1.QualifiedName("dra.net/rdma")]
+				if !ok || rdmaAttr.BoolValue == nil || !*rdmaAttr.BoolValue {
+					continue
+				}
+			}
+
+			railIdx := -1
+			for prefix, idx := range prefixToRail {
+				if strings.HasPrefix(pciAddr, prefix) {
+					railIdx = idx
+					break
+				}
+			}
+			if railIdx < 0 {
+				continue
+			}
+
+			numa := getNUMAZone(device)
+
+			nodeSlots[nodeName] = append(nodeSlots[nodeName], NICSlot{
+				NodeName:  nodeName,
+				RailIndex: railIdx,
+				NUMAZone:  numa,
+				IPv4:      "", // VFs lack IPv4; IP assigned separately
 			})
 		}
 	}
@@ -656,6 +763,10 @@ func (a *Allocator) scanIBSlots(ctx context.Context) (map[string][]NICSlot, erro
 		}
 
 		for _, device := range slice.Spec.Devices {
+			if !a.Config.NICConfig.IsDeviceAllowed(device) {
+				continue
+			}
+
 			pciAddr := getPCIAddress(device)
 			if pciAddr == "" {
 				continue
@@ -731,13 +842,20 @@ func getPCIAddress(device resourcev1.Device) string {
 // for larger requests that need all slots in a single zone.
 func selectSlots(slots []NICSlot, count int, numaConstrained bool, maxPairsPerNUMA int) []int {
 	if numaConstrained {
-		// Group by NUMA zone
+		// Group unique rails by NUMA zone
 		numaSlots := make(map[int][]int)
+		numaSeen := make(map[int]map[int]bool)
 		for _, s := range slots {
-			numaSlots[s.NUMAZone] = append(numaSlots[s.NUMAZone], s.RailIndex)
+			if numaSeen[s.NUMAZone] == nil {
+				numaSeen[s.NUMAZone] = make(map[int]bool)
+			}
+			if !numaSeen[s.NUMAZone][s.RailIndex] {
+				numaSeen[s.NUMAZone][s.RailIndex] = true
+				numaSlots[s.NUMAZone] = append(numaSlots[s.NUMAZone], s.RailIndex)
+			}
 		}
 
-		// Collect eligible zones (those with enough slots)
+		// Collect eligible zones (those with enough unique rails)
 		type zoneInfo struct {
 			zone  int
 			rails []int
@@ -752,10 +870,6 @@ func selectSlots(slots []NICSlot, count int, numaConstrained bool, maxPairsPerNU
 			return nil
 		}
 
-		// For small requests: prefer the zone with fewest free slots
-		// (most utilized) to pack small requests together.
-		// For large requests (>= maxPairsPerNUMA): prefer the zone with
-		// most free slots to maximize success.
 		sort.Slice(eligible, func(i, j int) bool {
 			if count < maxPairsPerNUMA {
 				return len(eligible[i].rails) < len(eligible[j].rails)
@@ -766,10 +880,14 @@ func selectSlots(slots []NICSlot, count int, numaConstrained bool, maxPairsPerNU
 		return eligible[0].rails[:count]
 	}
 
-	// Cross-NUMA: any rails
+	// Cross-NUMA: unique rails only
+	seen := make(map[int]bool)
 	var rails []int
 	for _, s := range slots {
-		rails = append(rails, s.RailIndex)
+		if !seen[s.RailIndex] {
+			seen[s.RailIndex] = true
+			rails = append(rails, s.RailIndex)
+		}
 	}
 	if len(rails) >= count {
 		return rails[:count]

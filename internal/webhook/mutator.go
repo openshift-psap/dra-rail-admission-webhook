@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"strconv"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
@@ -45,7 +47,9 @@ type Mutator struct {
 	KubeClient     kubernetes.Interface
 	ResourceClient resourceclient.ResourceV1Interface
 	Config         Config
-	Allocator      *Allocator // cluster-level GPU-NIC pair allocator
+	Allocator      *Allocator      // cluster-level GPU-NIC pair allocator
+	CIDRPoolCache  *CIDRPoolCache  // nil when not in cidrpool mode
+	IPAllocator    *IPAllocator    // nil when not in cidrpool mode
 }
 
 // jsonPatchOp represents a single JSON Patch operation.
@@ -117,8 +121,38 @@ func (m *Mutator) Mutate(ctx context.Context, pod *corev1.Pod, namespace string)
 			selectedNode = result.NodeName
 
 			for i, pair := range result.Pairs {
+				var gateway string
+				var addresses []string
+
+				if m.Config.IsCIDRPoolMode() {
+					if m.CIDRPoolCache == nil || m.IPAllocator == nil {
+						return nil, fmt.Errorf("cidrpool mode enabled but cache or allocator not initialized")
+					}
+					alloc, ok := m.CIDRPoolCache.GetAllocation(pair.RailIndex, result.NodeName)
+					if !ok {
+						return nil, fmt.Errorf("no cidrpool allocation for node %q rail %d", result.NodeName, pair.RailIndex)
+					}
+					gateway = alloc.Gateway
+					claimRef := fmt.Sprintf("%s/%s", namespace, podName(pod))
+					ipCIDR, err := m.IPAllocator.AllocateIP(result.NodeName, pair.RailIndex, alloc.Prefix, claimRef, alloc.ReservedIPs)
+					if err != nil {
+						return nil, fmt.Errorf("failed to allocate IP for pair %d: %w", i, err)
+					}
+					addresses = []string{ipCIDR}
+				} else {
+					railGW := ""
+					if pair.RailIndex >= 0 && pair.RailIndex < len(m.Config.NICConfig.Rails) {
+						railGW = m.Config.NICConfig.Rails[pair.RailIndex].Gateway
+					}
+					var err error
+					gateway, err = m.Config.NICConfig.ResolveGateway(result.NodeName, pair.RailIndex, railGW)
+					if err != nil {
+						return nil, fmt.Errorf("failed to resolve gateway for pair %d: %w", i, err)
+					}
+				}
+
 				mapping := ExplicitPairMapping{Devices: pair.Devices, Rail: pair.RailIndex}
-				spec, err := BuildExplicitPairClaimSpec(pair.NICIndex, pair.RailIndex, mapping, m.Config)
+				spec, err := BuildExplicitPairClaimSpec(pair.NICIndex, pair.RailIndex, mapping, m.Config, gateway, addresses...)
 				if err != nil {
 					return nil, fmt.Errorf("failed to build explicit claim spec for pair %d: %w", i, err)
 				}
@@ -141,11 +175,50 @@ func (m *Mutator) Mutate(ctx context.Context, pod *corev1.Pod, namespace string)
 
 			for i := 0; i < pairCount; i++ {
 				railIdx := result.RailIndices[i]
-				spec, err := BuildSinglePairClaimSpec(i, railIdx, m.Config)
+				var gateway string
+				var addresses []string
+
+				if m.Config.IsCIDRPoolMode() {
+					if m.CIDRPoolCache == nil || m.IPAllocator == nil {
+						return nil, fmt.Errorf("cidrpool mode enabled but cache or allocator not initialized")
+					}
+					alloc, ok := m.CIDRPoolCache.GetAllocation(railIdx, result.NodeName)
+					if !ok {
+						return nil, fmt.Errorf("no cidrpool allocation for node %q rail %d", result.NodeName, railIdx)
+					}
+					gateway = alloc.Gateway
+					claimRef := fmt.Sprintf("%s/%s", namespace, podName(pod))
+					ipCIDR, err := m.IPAllocator.AllocateIP(result.NodeName, railIdx, alloc.Prefix, claimRef, alloc.ReservedIPs)
+					if err != nil {
+						return nil, fmt.Errorf("failed to allocate IP for pair %d: %w", i, err)
+					}
+					addresses = []string{ipCIDR}
+				} else {
+					railGW := ""
+					if railIdx >= 0 && railIdx < len(m.Config.NICConfig.Rails) {
+						railGW = m.Config.NICConfig.Rails[railIdx].Gateway
+					}
+					gateway, err = m.Config.NICConfig.ResolveGateway(result.NodeName, railIdx, railGW)
+					if err != nil {
+						return nil, fmt.Errorf("failed to resolve gateway for pair %d: %w", i, err)
+					}
+					// In PF mode with crossRailCIDR, override the PF's /24 mask with the
+					// crossRailCIDR prefix length so cross-node traffic on the same rail
+					// is routable (e.g., 172.16.1.1/12 instead of 172.16.1.1/24).
+					if i < len(result.NICIPv4s) && result.NICIPv4s[i] != "" && m.Config.NICConfig.CrossRailCIDR != "" {
+						addr := rewriteAddressMask(result.NICIPv4s[i], m.Config.NICConfig.CrossRailCIDR)
+						if addr != "" {
+							addresses = []string{addr}
+						}
+					}
+				}
+
+				spec, err := BuildSinglePairClaimSpec(i, railIdx, m.Config, gateway, addresses...)
 				if err != nil {
 					return nil, fmt.Errorf("failed to build claim spec for pair %d: %w", i, err)
 				}
-				name := SinglePairTemplateName(i, railIdx, m.Config)
+				uniqueData := append([]string{gateway}, addresses...)
+				name := SinglePairTemplateName(i, railIdx, m.Config, uniqueData...)
 				if err := m.ensureClaimTemplate(ctx, namespace, name, spec); err != nil {
 					return nil, fmt.Errorf("failed to ensure claim template for pair %d: %w", i, err)
 				}
@@ -721,4 +794,23 @@ func podName(pod *corev1.Pod) string {
 // intToStr converts int to string (used in JSON patch paths).
 func intToStr(i int) string {
 	return strconv.Itoa(i)
+}
+
+// rewriteAddressMask takes a device IP (e.g., "172.16.1.1/24") and a target
+// CIDR (e.g., "172.16.0.0/12"), and returns the IP with the target's prefix
+// length (e.g., "172.16.1.1/12"). Returns "" if parsing fails.
+func rewriteAddressMask(deviceIP, targetCIDR string) string {
+	ip, _, err := net.ParseCIDR(deviceIP)
+	if err != nil {
+		ip = net.ParseIP(strings.Split(deviceIP, "/")[0])
+		if ip == nil {
+			return ""
+		}
+	}
+	_, targetNet, err := net.ParseCIDR(targetCIDR)
+	if err != nil {
+		return ""
+	}
+	maskSize, _ := targetNet.Mask.Size()
+	return fmt.Sprintf("%s/%d", ip.String(), maskSize)
 }
