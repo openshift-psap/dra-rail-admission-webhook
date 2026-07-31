@@ -1,0 +1,8 @@
+{{- if .Values.createNamespace }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "dra-admission-webhook.namespace" . }}
+  labels:
+    {{- include "dra-admission-webhook.labels" . | nindent 4 }}
+{{- end }}

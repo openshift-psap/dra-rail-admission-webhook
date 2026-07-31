@@ -1,3 +1,9 @@
+# DEPRECATED: Kustomize deployment is deprecated and will be removed in the
+# next release. Use the Helm chart instead:
+#
+#   helm install dra charts/dra-admission-webhook/ -n dra-webhook-system --create-namespace
+#
+# See charts/dra-admission-webhook/values.yaml for all configurable fields.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 

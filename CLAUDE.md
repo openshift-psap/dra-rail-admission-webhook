@@ -10,6 +10,15 @@ make test                           # Run all unit tests
 go test -v ./internal/webhook/...   # Run tests for a specific package
 go test -v -run TestValidateRequest ./internal/webhook/  # Run a single test
 make docker-build                   # Build separate webhook and reconciler images
+
+# Helm (preferred)
+make helm-lint                      # Lint chart
+make helm-template                  # Render templates locally
+helm install dra charts/dra-admission-webhook/ -n dra-webhook-system --create-namespace
+helm install dra charts/dra-admission-webhook/ -f charts/dra-admission-webhook/values-aks-ndv5.yaml
+helm upgrade dra charts/dra-admission-webhook/ -n dra-webhook-system
+
+# Kustomize (DEPRECATED — will be removed in the next release)
 make deploy NAMESPACE=dra-webhook-system  # Generate TLS certs + deploy to cluster
 kubectl apply -k deploy/overlays/aks-ndv5/  # Deploy with cluster-specific overlay
 
@@ -49,9 +58,10 @@ The mutation pipeline:
 - **Template reuse**: Each (count, NUMA mode, rail) tuple gets a deterministic template name including a config hash, so multiple pods can share templates.
 - **NUMA modes**: Single-NUMA (default, max 4 pairs) vs cross-NUMA (opt-in via `dra.llm-d.io/allow-cross-numa` annotation, max 8 pairs). Requesting all 8 pairs auto-enables cross-NUMA.
 - **Transport detection**: `transportMode: auto` (default) reads `dra.net/encapsulation` from ResourceSlices at startup. Ethernet uses IPv4 prefix matching + `matchAttribute: pcieRoot`. InfiniBand uses PCIe address pinning via `ibRails` config.
-- **Config source**: All configuration loaded from a ConfigMap (`deploy/configmap.yaml`), never environment variables. Both webhook and reconciler configs live in the same ConfigMap under different keys (`config.yaml` and `reconciler.yaml`).
+- **Config source**: All configuration loaded from a ConfigMap, never environment variables. Both webhook and reconciler configs live in the same ConfigMap under different keys (`config.yaml` and `reconciler.yaml`).
 - **Idempotency**: Already-mutated pods (with `dra.llm-d.io/mutated` annotation) are skipped.
-- **Kustomize overlays**: `deploy/base/` has canonical manifests. Cluster-specific config (images, transport, rails) goes in `deploy/overlays/<cluster>/`.
+- **Helm chart** (preferred): `charts/dra-admission-webhook/` with `values.yaml` defaults. Cluster-specific config via values files (e.g., `values-aks-ndv5.yaml`). TLS is automated via `helm-generated` mode (self-signed CA + cert). ConfigMap config uses `toYaml` passthrough from `webhookConfig`/`reconcilerConfig` values blocks.
+- **Kustomize overlays** (DEPRECATED): `deploy/base/` has canonical manifests. Cluster-specific config (images, transport, rails) goes in `deploy/overlays/<cluster>/`. Will be removed in the next release.
 
 ## Constants (internal/webhook/constants.go)
 

@@ -3,7 +3,7 @@ RECONCILER_IMG ?= dra-gpu-nic-reconciler:latest
 NAMESPACE ?= dra-webhook-system
 E2E_KUBECONFIG ?= $(HOME)/.kube/config
 
-.PHONY: build test e2e docker-build docker-push deploy undeploy generate-certs
+.PHONY: build test e2e docker-build docker-push deploy undeploy generate-certs helm-lint helm-template helm-install helm-upgrade
 
 build:
 	go build -o bin/webhook ./cmd/webhook/
@@ -25,6 +25,8 @@ docker-push:
 	docker push $(RECONCILER_IMG)
 
 deploy: generate-certs
+	@echo "WARNING: Kustomize deploy is deprecated. Use Helm instead:"
+	@echo "  helm install dra charts/dra-admission-webhook/ -n $(NAMESPACE) --create-namespace"
 	kubectl create namespace $(NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
 	kubectl apply -f deploy/ -n $(NAMESPACE)
 
@@ -32,6 +34,7 @@ undeploy:
 	kubectl delete -f deploy/ -n $(NAMESPACE) --ignore-not-found
 
 generate-certs:
+	@echo "WARNING: Manual cert generation is deprecated. The Helm chart handles TLS automatically."
 	@echo "Generating self-signed TLS certificates..."
 	@mkdir -p certs
 	@openssl req -x509 -newkey rsa:4096 -keyout certs/tls.key -out certs/tls.crt \
@@ -42,6 +45,18 @@ generate-certs:
 		-n $(NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
 	@echo "Certificates generated. Update deploy/webhook-config.yaml caBundle with:"
 	@echo "$$(cat certs/tls.crt | base64 | tr -d '\n')"
+
+helm-lint:
+	helm lint charts/dra-admission-webhook/
+
+helm-template:
+	helm template dra charts/dra-admission-webhook/
+
+helm-install:
+	helm install dra charts/dra-admission-webhook/ -n $(NAMESPACE) --create-namespace
+
+helm-upgrade:
+	helm upgrade dra charts/dra-admission-webhook/ -n $(NAMESPACE)
 
 e2e:
 	E2E_KUBECONFIG=$(E2E_KUBECONFIG) \

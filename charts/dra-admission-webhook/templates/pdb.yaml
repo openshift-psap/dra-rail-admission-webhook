@@ -1,0 +1,14 @@
+{{- if .Values.pdb.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "dra-admission-webhook.fullname" . }}
+  namespace: {{ include "dra-admission-webhook.namespace" . }}
+  labels:
+    {{- include "dra-admission-webhook.webhookLabels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "dra-admission-webhook.webhookSelectorLabels" . | nindent 6 }}
+{{- end }}

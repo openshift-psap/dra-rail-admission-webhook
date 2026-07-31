@@ -69,6 +69,26 @@ jobs:
         with:
           version: latest
 
+  helm-lint:
+    name: Helm Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+
+      - name: Lint default values
+        run: helm lint charts/dra-admission-webhook/
+
+      - name: Lint AKS NDv5 values
+        run: helm lint charts/dra-admission-webhook/ -f charts/dra-admission-webhook/values-aks-ndv5.yaml
+
+      - name: Lint PSAP RDU4 B200 values
+        run: helm lint charts/dra-admission-webhook/ -f charts/dra-admission-webhook/values-psap-rdu4-b200.yaml
+
+      - name: Template renders without errors
+        run: helm template test charts/dra-admission-webhook/
+
   docker-build:
     name: Docker Build & Push
     needs: [build, test, vet, lint]
